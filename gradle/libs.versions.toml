@@ -3,7 +3,7 @@ agp = "8.12.0"
 annotation = "1.9.1"
 hidden-api = "4.4.0"
 jdk18on = "1.81"
-kotlin = "2.2.0"
+kotlin = "2.2.10"
 libcxx = "28.1.13356709"
 
 [libraries]
