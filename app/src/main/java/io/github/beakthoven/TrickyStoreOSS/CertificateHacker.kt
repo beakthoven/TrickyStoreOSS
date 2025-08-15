@@ -505,11 +505,11 @@ object CertificateHacker {
         Logger.e("Failed to generate key pair", it) 
     }.getOrNull()
     
-    fun generateChain(uid: Int, params: KeyGenParameters, keyPair: KeyPair): List<ByteArray>? = runCatching {
+    fun generateChain(uid: Int, params: KeyGenParameters, keyPair: KeyPair, securityLevel: Int = 1): List<ByteArray>? = runCatching {
         val keybox = getKeyboxForAlgorithm(params.algorithm) ?: return null
-        
+
         val issuer = X509CertificateHolder(keybox.certificates[0].encoded).subject
-        val leaf = buildCertificate(keyPair, keybox, params, issuer, uid)
+        val leaf = buildCertificate(keyPair, keybox, params, issuer, uid, securityLevel)
         
         val chain = buildList {
             add(leaf)
@@ -525,7 +525,8 @@ object CertificateHacker {
         uid: Int,
         descriptor: KeyDescriptor,
         attestKeyDescriptor: KeyDescriptor?,
-        params: KeyGenParameters
+        params: KeyGenParameters,
+        securityLevel: Int = 1
     ): Pair<KeyPair, List<Certificate>>? = runCatching {
         Logger.i("Requested KeyPair with alias: ${descriptor.alias}")
         
@@ -545,7 +546,7 @@ object CertificateHacker {
             keybox.keyPair to X509CertificateHolder(keybox.certificates[0].encoded).subject
         }
         
-        val leaf = buildCertificate(keyPair, keybox, params, issuer, uid, signingKeyPair)
+        val leaf = buildCertificate(keyPair, keybox, params, issuer, uid, securityLevel, signingKeyPair)
         val chain = buildList {
             add(leaf)
             if (!hasAttestKey) {
@@ -655,6 +656,7 @@ object CertificateHacker {
         params: KeyGenParameters,
         issuer: X500Name,
         uid: Int,
+        securityLevel: Int = 1,
         signingKeyPair: KeyPair = keybox.keyPair
     ): Certificate {
         val builder = JcaX509v3CertificateBuilder(
@@ -667,7 +669,7 @@ object CertificateHacker {
         )
         
         builder.addExtension(Extension.keyUsage, true, KeyUsage(KeyUsage.keyCertSign))
-        builder.addExtension(createAttestationExtension(params, uid))
+        builder.addExtension(createAttestationExtension(params, uid, securityLevel))
         
         val signerAlgorithm = when (params.algorithm) {
             Algorithm.EC -> "SHA256withECDSA"
@@ -679,7 +681,7 @@ object CertificateHacker {
         return JcaX509CertificateConverter().getCertificate(builder.build(contentSigner))
     }
 
-    private fun createAttestationExtension(params: KeyGenParameters, uid: Int): Extension {
+    private fun createAttestationExtension(params: KeyGenParameters, uid: Int, securityLevel: Int = 1): Extension {
         try {
             val key = bootKey
             val hash = bootHash
@@ -751,7 +753,7 @@ object CertificateHacker {
             return Extension(
                 ATTESTATION_OID,
                 false,
-                getAsn1OctetString(teeEnforcedObjects.toTypedArray(), softwareEnforcedObjects, params)
+                getAsn1OctetString(teeEnforcedObjects.toTypedArray(), softwareEnforcedObjects, params, securityLevel)
             )
         } catch (t: Throwable) {
             Logger.e("Failed to create attestation extension", t)
@@ -764,12 +766,13 @@ object CertificateHacker {
     private fun getAsn1OctetString(
         teeEnforcedEncodables: Array<ASN1Encodable>,
         softwareEnforcedEncodables: Array<ASN1Encodable>,
-        params: KeyGenParameters
+        params: KeyGenParameters,
+        securityLevel: Int = 1
     ): ASN1OctetString {
         val attestationVersion = ASN1Integer(io.github.beakthoven.TrickyStoreOSS.attestVersion.toLong())
-        val attestationSecurityLevel = ASN1Enumerated(1)
+        val attestationSecurityLevel = ASN1Enumerated(securityLevel)
         val keymasterVersion = ASN1Integer(io.github.beakthoven.TrickyStoreOSS.keymasterVersion.toLong())
-        val keymasterSecurityLevel = ASN1Enumerated(1)
+        val keymasterSecurityLevel = ASN1Enumerated(securityLevel)
         val attestationChallenge = DEROctetString(params.attestationChallenge ?: ByteArray(0))
         val uniqueId = DEROctetString(ByteArray(0))
         val softwareEnforced = DERSequence(softwareEnforcedEncodables)

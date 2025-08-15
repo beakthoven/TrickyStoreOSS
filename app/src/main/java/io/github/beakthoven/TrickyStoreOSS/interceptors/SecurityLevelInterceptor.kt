@@ -82,7 +82,7 @@ class SecurityLevelInterceptor(
                 val entropy = data.createByteArray()
                 val kgp = CertificateHacker.KeyGenParameters(params)
                 if (Config.needGenerate(callingUid)) {
-                    val pair = CertificateHacker.generateKeyPair(callingUid, keyDescriptor, attestationKeyDescriptor, kgp)
+                    val pair = CertificateHacker.generateKeyPair(callingUid, keyDescriptor, attestationKeyDescriptor, kgp, level)
                         ?: return@runCatching
                     keyPairs[Key(callingUid, keyDescriptor.alias)] = Pair(pair.first, pair.second)
                     val response = buildResponse(pair.second, kgp, attestationKeyDescriptor ?: keyDescriptor)
@@ -94,7 +94,7 @@ class SecurityLevelInterceptor(
                 } else if (Config.needHack(callingUid)) {
                     if ((kgp.purpose.contains(7)) || (attestationKeyDescriptor != null)) {
                         Logger.i("Generating key in generation mode for attestation: uid=$callingUid alias=${keyDescriptor.alias}")
-                        val pair = CertificateHacker.generateKeyPair(callingUid, keyDescriptor, attestationKeyDescriptor, kgp)
+                        val pair = CertificateHacker.generateKeyPair(callingUid, keyDescriptor, attestationKeyDescriptor, kgp, level)
                             ?: return@runCatching
                         keyPairs[Key(callingUid, keyDescriptor.alias)] = Pair(pair.first, pair.second)
                         val response = buildResponse(pair.second, kgp, attestationKeyDescriptor ?: keyDescriptor)
