@@ -5,3 +5,12 @@ io.github.vvb2060.mahoshojo
 icu.nullptr.nativetest
 com.reveny.nativecheck
 com.zhenxi.hunter
+io.github.qwq233.keyattestation
+org.akanework.checker
+com.godevelopers.OprekCek
+luna.safe.luna
+me.garfieldhan.holmes
+com.rem01gaming.disclosure
+io.liankong.riskdetector
+com.kikyps.crackme
+wu.Zygisk.Detector
