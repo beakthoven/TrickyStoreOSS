@@ -6,11 +6,6 @@ icu.nullptr.nativetest
 com.reveny.nativecheck
 com.zhenxi.hunter
 io.github.qwq233.keyattestation
-org.akanework.checker
-com.godevelopers.OprekCek
-luna.safe.luna
-me.garfieldhan.holmes
-com.rem01gaming.disclosure
+com.android.nativetest
 io.liankong.riskdetector
-com.kikyps.crackme
-wu.Zygisk.Detector
+luna.safe.luna
