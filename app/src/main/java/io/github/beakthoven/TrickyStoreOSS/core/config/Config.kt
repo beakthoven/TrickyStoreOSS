@@ -7,6 +7,7 @@ package io.github.beakthoven.TrickyStoreOSS.core.config
 
 import android.content.pm.IPackageManager
 import android.os.FileObserver
+import android.os.IInterface
 import android.os.ServiceManager
 import io.github.beakthoven.TrickyStoreOSS.CertificateHacker
 import io.github.beakthoven.TrickyStoreOSS.core.logging.Logger
@@ -128,7 +129,7 @@ object Config {
     private var iPm: IPackageManager? = null
 
     fun getPm(): IPackageManager? {
-        if (iPm == null) {
+        if (iPm == null || (iPm as? IInterface)?.asBinder()?.pingBinder() != true) {
             iPm = IPackageManager.Stub.asInterface(ServiceManager.getService("package"))
         }
         return iPm
