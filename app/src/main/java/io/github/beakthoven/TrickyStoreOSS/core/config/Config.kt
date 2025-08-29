@@ -7,6 +7,7 @@ package io.github.beakthoven.TrickyStoreOSS.core.config
 
 import android.content.pm.IPackageManager
 import android.os.FileObserver
+import android.os.IBinder
 import android.os.IInterface
 import android.os.ServiceManager
 import io.github.beakthoven.TrickyStoreOSS.CertificateHacker
@@ -127,10 +128,18 @@ object Config {
     }
 
     private var iPm: IPackageManager? = null
+    private val packageManagerDeathRecipient = object : IBinder.DeathRecipient {
+        override fun binderDied() {
+            (iPm as? IInterface)?.asBinder()?.unlinkToDeath(this, 0)
+            iPm = null
+        }
+    }
 
     fun getPm(): IPackageManager? {
-        if (iPm == null || (iPm as? IInterface)?.asBinder()?.pingBinder() != true) {
-            iPm = IPackageManager.Stub.asInterface(ServiceManager.getService("package"))
+        if (iPm == null) {
+            val binder = ServiceManager.getService("package")
+            binder.linkToDeath(packageManagerDeathRecipient, 0)
+            iPm = IPackageManager.Stub.asInterface(binder)
         }
         return iPm
     }
