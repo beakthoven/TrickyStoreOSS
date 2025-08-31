@@ -138,7 +138,7 @@ object PkgConfig {
 
     fun getPm(): IPackageManager? {
         if (iPm == null) {
-            val binder = ServiceManager.getService("package") ?: return null
+            val binder = waitAndGetSystemService("package") ?: return null
             binder.linkToDeath(packageManagerDeathRecipient, 0)
             iPm = IPackageManager.Stub.asInterface(binder)
         }
@@ -237,6 +237,19 @@ object PkgConfig {
         )
     }.onFailure {
         Logger.e("failed to update patch level", it)
+    }
+
+    private fun waitAndGetSystemService(name: String): IBinder? {
+        var tryCount = 0
+
+        while (tryCount++ < 70) {
+            val service = ServiceManager.getService(name)
+            if (service != null) return service
+            Logger.e("Package manager is null, waiting for 500ms")
+            Thread.sleep(500)
+        }
+
+        return null
     }
 }
 
