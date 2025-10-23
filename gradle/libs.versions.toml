@@ -2,7 +2,7 @@
 agp = "8.13.0"
 annotation = "1.9.1"
 jdk18on = "1.81"
-kotlin = "2.2.10"
+kotlin = "2.2.21"
 libcxx = "28.1.13356709"
 
 [libraries]
