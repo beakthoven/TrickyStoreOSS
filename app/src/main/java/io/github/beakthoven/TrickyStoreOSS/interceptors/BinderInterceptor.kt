@@ -100,14 +100,23 @@ open class BinderInterceptor : Binder() {
     ): Result = Skip
 
     override fun onTransact(code: Int, data: Parcel, reply: Parcel?, flags: Int): Boolean {
-        val result = when (code) {
-            PRE_TRANSACT_CODE -> handlePreTransact(data)
-            POST_TRANSACT_CODE -> handlePostTransact(data)
-            else -> return super.onTransact(code, data, reply, flags)
+        return try {
+            val result = when (code) {
+                PRE_TRANSACT_CODE -> handlePreTransact(data)
+                POST_TRANSACT_CODE -> handlePostTransact(data)
+                else -> return super.onTransact(code, data, reply, flags)
+            }
+            writeResultToReply(result, reply!!)
+            true
+        } catch (e: Throwable) {
+            Logger.e("onTransact uncaught exception", e)
+            try {
+                reply?.setDataPosition(0)
+                reply?.setDataSize(0)
+                reply?.writeInt(RESULT_SKIP)
+            } catch (_: Throwable) {}
+            true
         }
-        
-        writeResultToReply(result, reply!!)
-        return true
     }
     
     private fun handlePreTransact(data: Parcel): Result {
@@ -123,6 +132,9 @@ open class BinderInterceptor : Binder() {
             transactionData.appendFrom(data, data.dataPosition(), dataSize.toInt())
             transactionData.setDataPosition(0)
             onPreTransact(target, transactionCode, transactionFlags, callingUid, callingPid, transactionData)
+        } catch (e: Throwable) {
+            Logger.e("handlePreTransact exception code=$transactionCode uid=$callingUid", e)
+            Skip
         } finally {
             transactionData.recycle()
         }
@@ -153,6 +165,9 @@ open class BinderInterceptor : Binder() {
             } else null
             
             onPostTransact(target, transactionCode, transactionFlags, callingUid, callingPid, transactionData, reply, resultCode)
+        } catch (e: Throwable) {
+            Logger.e("handlePostTransact exception code=$transactionCode uid=$callingUid", e)
+            Skip
         } finally {
             transactionData.recycle()
             transactionReply.recycle()
@@ -160,22 +175,31 @@ open class BinderInterceptor : Binder() {
     }
     
     private fun writeResultToReply(result: Result, reply: Parcel) {
-        when (result) {
-            Skip -> reply.writeInt(RESULT_SKIP)
-            Continue -> reply.writeInt(RESULT_CONTINUE)
-            is OverrideReply -> {
-                reply.writeInt(RESULT_OVERRIDE_REPLY)
-                reply.writeInt(result.code)
-                reply.writeLong(result.reply.dataSize().toLong())
-                reply.appendFrom(result.reply, 0, result.reply.dataSize())
-                result.reply.recycle()
+        try {
+            when (result) {
+                Skip -> reply.writeInt(RESULT_SKIP)
+                Continue -> reply.writeInt(RESULT_CONTINUE)
+                is OverrideReply -> {
+                    reply.writeInt(RESULT_OVERRIDE_REPLY)
+                    reply.writeInt(result.code)
+                    reply.writeLong(result.reply.dataSize().toLong())
+                    reply.appendFrom(result.reply, 0, result.reply.dataSize())
+                    result.reply.recycle()
+                }
+                is OverrideData -> {
+                    reply.writeInt(RESULT_OVERRIDE_DATA)
+                    reply.writeLong(result.data.dataSize().toLong())
+                    reply.appendFrom(result.data, 0, result.data.dataSize())
+                    result.data.recycle()
+                }
             }
-            is OverrideData -> {
-                reply.writeInt(RESULT_OVERRIDE_DATA)
-                reply.writeLong(result.data.dataSize().toLong())
-                reply.appendFrom(result.data, 0, result.data.dataSize())
-                result.data.recycle()
-            }
+        } catch (e: Throwable) {
+            Logger.e("writeResultToReply exception", e)
+            try {
+                reply.setDataPosition(0)
+                reply.setDataSize(0)
+                reply.writeInt(RESULT_SKIP)
+            } catch (_: Throwable) {}
         }
     }
 }
