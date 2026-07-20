@@ -8,7 +8,6 @@ package io.github.beakthoven.TrickyStoreOSS
 import android.system.keystore2.KeyEntryResponse
 import android.system.keystore2.KeyMetadata
 import android.util.Log
-import io.github.beakthoven.TrickyStoreOSS.CertificateUtils.putCertificateChain
 import org.bouncycastle.asn1.ASN1Encodable
 import org.bouncycastle.asn1.DEROctetString
 import org.bouncycastle.openssl.PEMKeyPair
@@ -27,22 +26,7 @@ import java.security.cert.X509Certificate
 
 object CertificateUtils {
     private const val TAG = "TrickyStoreOSS"
-    
-    sealed class CertificateResult<out T> {
-        data class Success<T>(val data: T) : CertificateResult<T>()
-        data class Error(val message: String, val cause: Throwable? = null) : CertificateResult<Nothing>()
-        
-        inline fun <R> map(transform: (T) -> R): CertificateResult<R> = when (this) {
-            is Success -> Success(transform(data))
-            is Error -> this
-        }
-        
-        fun getOrNull(): T? = when (this) {
-            is Success -> data
-            is Error -> null
-        }
-    }
-    
+
     sealed class ParseResult<out T> {
         data class Success<T>(val data: T) : ParseResult<T>()
         data class Error(val message: String, val cause: Throwable? = null) : ParseResult<Nothing>()
@@ -57,16 +41,6 @@ object CertificateUtils {
                 Log.w(TAG, "Couldn't parse certificate in keystore", e)
                 null
             }
-        }
-    }
-    
-    fun ByteArray.toCertificateResult(): CertificateResult<X509Certificate> {
-        return try {
-            val certFactory = CertificateFactory.getInstance("X.509")
-            val certificate = certFactory.generateCertificate(ByteArrayInputStream(this)) as X509Certificate
-            CertificateResult.Success(certificate)
-        } catch (e: CertificateException) {
-            CertificateResult.Error("Failed to parse certificate", e)
         }
     }
     
@@ -114,31 +88,6 @@ object CertificateUtils {
         }
     }
     
-    fun KeyEntryResponse.putCertificateChain(chain: Array<Certificate>): Result<Unit> {
-        return runCatching {
-            metadata.putCertificateChain(chain)
-        }
-    }
-    
-    fun KeyMetadata.putCertificateChain(chain: Array<Certificate>): Result<Unit> {
-        return runCatching {
-            if (chain.isEmpty()) return@runCatching
-            
-            certificate = chain[0].encoded
-            
-            if (chain.size > 1) {
-                ByteArrayOutputStream().use { output ->
-                    for (i in 1 until chain.size) {
-                        output.write(chain[i].encoded)
-                    }
-                    certificateChain = output.toByteArray()
-                }
-            } else {
-                certificateChain = null
-            }
-        }
-    }
-    
     // Certificate parsing utilities
     fun parseKeyPair(keyContent: String): ParseResult<PEMKeyPair> {
         return try {
@@ -182,20 +131,6 @@ object CertificateUtils {
     }
 }
 
-fun ByteArray?.toX509Certificate(): X509Certificate? = CertificateUtils.run { this@toX509Certificate.toCertificate() }
-
-fun ByteArray?.toX509Certificates(): Collection<X509Certificate> = CertificateUtils.run { this@toX509Certificates.toCertificates() }
-
-fun Collection<Certificate>.encodedBytes(): ByteArray? = CertificateUtils.run { this@encodedBytes.toByteArray() }
-
-fun Collection<Certificate>.encodedBytesList(): List<ByteArray>? = CertificateUtils.run { this@encodedBytesList.toByteArrayList() }
-
-fun KeyEntryResponse.putCertificateChain(chain: Array<Certificate>): Result<Unit> {
-    return runCatching {
-        metadata.putCertificateChain(chain).getOrThrow()
-    }
-}
-
 fun KeyMetadata.putCertificateChain(chain: Array<Certificate>): Result<Unit> {
     return runCatching {
         if (chain.isEmpty()) return@runCatching
@@ -212,5 +147,11 @@ fun KeyMetadata.putCertificateChain(chain: Array<Certificate>): Result<Unit> {
         } else {
             certificateChain = null
         }
+    }
+}
+
+fun KeyEntryResponse.putCertificateChain(chain: Array<Certificate>): Result<Unit> {
+    return runCatching {
+        metadata.putCertificateChain(chain).getOrThrow()
     }
 }

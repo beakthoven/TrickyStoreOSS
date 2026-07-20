@@ -17,6 +17,7 @@ import android.system.keystore2.KeyEntryResponse
 import android.system.keystore2.KeyMetadata
 import androidx.annotation.Keep
 import io.github.beakthoven.TrickyStoreOSS.CertificateGen
+import io.github.beakthoven.TrickyStoreOSS.CertificateUtils
 import io.github.beakthoven.TrickyStoreOSS.config.PkgConfig
 import io.github.beakthoven.TrickyStoreOSS.interceptors.InterceptorUtils.getTransactCode
 import io.github.beakthoven.TrickyStoreOSS.logging.Logger
