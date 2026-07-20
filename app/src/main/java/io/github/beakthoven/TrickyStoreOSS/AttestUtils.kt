@@ -26,6 +26,7 @@ val ATTESTATION_OID = ASN1ObjectIdentifier("1.3.6.1.4.1.11129.2.1.17")
 
 object AttestUtils {
     data class AttestationData(
+        val verifiedBootKey: ByteArray?,
         val verifiedBootHash: ByteArray?,
         val attestVersion: Int?,
         val keymasterVersion: Int?,
@@ -114,6 +115,7 @@ object AttestUtils {
 
             val attestVersion = ASN1Integer.getInstance(encodables[0]).value.intValueExact()
             val keymasterVersion = ASN1Integer.getInstance(encodables[2]).value.intValueExact()
+            var attestVerifiedBootKey: ByteArray? = null
             var attestVerifiedBootHash: ByteArray? = null
             var attestOSVersion: Int? = null
 
@@ -125,6 +127,7 @@ object AttestUtils {
                     704 -> { // Parse Root of Trust
                         val rootOfTrustSeq = ASN1Sequence.getInstance(tagged.baseObject.toASN1Primitive())
                         if (rootOfTrustSeq.size() >= 4) {
+                            attestVerifiedBootKey = ASN1OctetString.getInstance(rootOfTrustSeq.getObjectAt(0)).octets
                             attestVerifiedBootHash = ASN1OctetString.getInstance(rootOfTrustSeq.getObjectAt(3)).octets
                         }
                     }
@@ -136,10 +139,12 @@ object AttestUtils {
 
             Logger.i("Extracted attestationVersion: $attestVersion")
             Logger.i("Extracted keymasterVersion: $keymasterVersion")
+            Logger.i("Extracted verifiedBootKey: ${attestVerifiedBootKey?.toHex() ?: 0}")
             Logger.i("Extracted verifiedBootHash: ${attestVerifiedBootHash?.toHex() ?: 0}")
             Logger.i("Extracted osVersion: $attestOSVersion")
 
             AttestationData(
+                verifiedBootKey = attestVerifiedBootKey,
                 verifiedBootHash = attestVerifiedBootHash,
                 attestVersion = attestVersion,
                 keymasterVersion = keymasterVersion,
