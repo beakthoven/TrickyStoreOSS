@@ -264,7 +264,7 @@ object KeyBoxUtils {
                 else -> keyboxAlgorithm
             }
             
-            keyboxes[algorithmName] = KeyBox(pemKeyPair, keyPair, certificateChain)
+            keyboxes[algorithmName] = KeyBox(keyPair, certificateChain)
             
         } catch (t: Throwable) {
             Logger.e("Error processing keybox $index", t)
