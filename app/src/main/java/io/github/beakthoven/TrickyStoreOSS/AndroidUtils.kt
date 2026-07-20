@@ -17,13 +17,50 @@ import io.github.beakthoven.TrickyStoreOSS.logging.Logger
 import org.bouncycastle.asn1.ASN1Integer
 import org.bouncycastle.asn1.DEROctetString
 import org.bouncycastle.asn1.DERSequence
+import java.io.File
 import java.security.MessageDigest
 import java.util.concurrent.ThreadLocalRandom
 
 object AndroidUtils {
 
+    const val DO_NOT_REPORT = -1
+
     val bootKey: ByteArray by lazy {
-        randomBytes()
+        getBootKeyFromProp()?.also {
+            Logger.d("Using boot key from ro.boot.vbmeta.public_key_digest: ${it.toHex()}")
+        } ?: CachedAttestData?.verifiedBootKey?.takeIfNonZero()?.also {
+            Logger.d("Using boot key from cached TEE attestation: ${it.toHex()}")
+        } ?: persistedBootKey().also {
+            Logger.d("Using persisted random boot key (no AVB key available): ${it.toHex()}")
+        }
+    }
+
+    private fun ByteArray.takeIfNonZero(): ByteArray? =
+        takeIf { isNotEmpty() && any { it != 0.toByte() } }
+
+    @OptIn(ExperimentalStdlibApi::class)
+    fun getBootKeyFromProp(): ByteArray? {
+        val digest = SystemProperties.get("ro.boot.vbmeta.public_key_digest", null) ?: return null
+        if (digest.length != 64) return null
+        return runCatching { digest.hexToByteArray() }.getOrNull()
+    }
+
+    @OptIn(ExperimentalStdlibApi::class)
+    private fun persistedBootKey(): ByteArray {
+        val file = File("/data/adb/tricky_store/boot_key")
+        return runCatching {
+            if (file.exists()) {
+                file.readText().trim().hexToByteArray()
+            } else {
+                file.parentFile?.mkdirs()
+                val key = randomBytes()
+                file.writeText(key.toHex())
+                key
+            }
+        }.getOrElse {
+            Logger.e("Failed to persist boot key, using ephemeral random", it)
+            randomBytes()
+        }
     }
 
     fun setupBootHash() {
@@ -55,7 +92,7 @@ object AndroidUtils {
 
     private fun getBootHashFromAttestation(): ByteArray? {
         return try {
-            CachedAttestData?.verifiedBootHash
+            CachedAttestData?.verifiedBootHash?.takeIfNonZero()
         } catch (e: Exception) {
             Logger.e("Failed to get boot hash from attestation: ${e.message}")
             null
@@ -84,17 +121,9 @@ object AndroidUtils {
         get() = getCustomPatchLevel("system", true) 
             ?: Build.VERSION.SECURITY_PATCH.convertPatchLevel(true)
 
-    val vendorPatchLevel: Int
-        get() = getCustomPatchLevel("vendor", false) 
-            ?: Build.VERSION.SECURITY_PATCH.convertPatchLevel(false)
-
     val vendorPatchLevelLong: Int
         get() = getCustomPatchLevel("vendor", true) 
             ?: Build.VERSION.SECURITY_PATCH.convertPatchLevel(true)
-
-    val bootPatchLevel: Int
-        get() = getCustomPatchLevel("boot", false) 
-            ?: Build.VERSION.SECURITY_PATCH.convertPatchLevel(false)
 
     val bootPatchLevelLong: Int
         get() = getCustomPatchLevel("boot", true) 
@@ -113,7 +142,7 @@ object AndroidUtils {
         } ?: return null
 
         when {
-            value.equals("no", ignoreCase = true) -> return null
+            value.equals("no", ignoreCase = true) -> return DO_NOT_REPORT
             value.equals("prop", ignoreCase = true) -> return null
         }
 
