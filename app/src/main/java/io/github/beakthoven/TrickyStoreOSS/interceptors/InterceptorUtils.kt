@@ -9,6 +9,7 @@ import android.os.IBinder
 import android.os.Parcel
 import android.os.Parcelable
 import android.os.ServiceManager
+import android.os.ServiceSpecificException
 import android.security.KeyStore
 import android.security.keystore.KeystoreResponse
 import io.github.beakthoven.TrickyStoreOSS.logging.Logger
@@ -131,6 +132,21 @@ object InterceptorUtils {
         parcel.writeNoException()
         parcel.writeTypedObject(obj, flags)
         return BinderInterceptor.OverrideReply(resultCode, parcel)
+    }
+
+    fun typedReply(metadata: Parcelable?): BinderInterceptor.OverrideReply =
+        createTypedObjectReply(metadata)
+
+    fun errorReply(errorCode: Int, message: String): BinderInterceptor.OverrideReply {
+        val p = Parcel.obtain()
+        p.writeException(ServiceSpecificException(errorCode, message))
+        return BinderInterceptor.OverrideReply(0, p)
+    }
+
+    fun successReply(): BinderInterceptor.OverrideReply {
+        val p = Parcel.obtain()
+        p.writeNoException()
+        return BinderInterceptor.OverrideReply(0, p)
     }
     
     fun String.extractAlias(): String {
