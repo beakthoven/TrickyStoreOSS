@@ -41,7 +41,6 @@ import java.nio.charset.StandardCharsets
 import java.security.KeyPair
 import java.security.KeyPairGenerator
 import java.security.MessageDigest
-import java.security.Security
 import java.security.cert.Certificate
 import java.security.cert.X509Certificate
 import java.security.spec.ECGenParameterSpec
@@ -192,9 +191,6 @@ object CertificateGen {
     }.getOrNull()
 
     fun generateKeyPair(params: KeyGenParameters): KeyPair? = runCatching {
-        Security.removeProvider(BouncyCastleProvider.PROVIDER_NAME)
-        Security.addProvider(BouncyCastleProvider())
-
         val (keyPairGenerator, spec) = when (params.algorithm) {
             Algorithm.EC -> {
                 Logger.d("Generating EC keypair of size ${params.keySize}")
