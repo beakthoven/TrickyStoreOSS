@@ -5,34 +5,37 @@
 
 import com.android.build.api.artifact.SingleArtifact
 import com.android.build.api.variant.ApplicationVariant
-import java.io.ByteArrayOutputStream
 
-plugins {
-    alias(libs.plugins.android.application)
-}
+plugins { alias(libs.plugins.android.application) }
 
-fun String.execute(currentWorkingDir: File = File("./")): String {
-    val parts = this.split("\\s+".toRegex())
-    val process = ProcessBuilder(parts)
-        .directory(currentWorkingDir)
-        .redirectErrorStream(true)
-        .start()
+val gitCommitCount =
+    providers
+        .exec {
+            commandLine("git", "rev-list", "HEAD", "--count")
+            workingDir = rootDir
+        }
+        .standardOutput
+        .asText
+        .map { it.trim().toInt() }
+        .get()
 
-    val output = process.inputStream.bufferedReader().readText()
-    process.waitFor()
-    return output.trim()
-}
+val gitCommitHash =
+    providers
+        .exec {
+            commandLine("git", "rev-parse", "--verify", "--short", "HEAD")
+            workingDir = rootDir
+        }
+        .standardOutput
+        .asText
+        .map { it.trim() }
+        .get()
 
-
-val gitCommitCount = "git rev-list HEAD --count".execute().toInt()
-val gitCommitHash = "git rev-parse --verify --short HEAD".execute()
-val verName = "v2.1.0"
+val verName = "v3.0.0"
 
 android {
     namespace = "io.github.beakthoven.TrickyStoreOSS"
     compileSdk = 37
     ndkVersion = "29.0.14206865"
-    buildToolsVersion = "37.0.0"
 
     defaultConfig {
         applicationId = "io.github.beakthoven.TrickyStoreOSS"
@@ -62,17 +65,10 @@ android {
         }
     }
 
-    buildFeatures {
-        prefab = true
-    }
-
     buildTypes {
         release {
             isMinifyEnabled = true
-            proguardFiles(
-                getDefaultProguardFile("proguard-android-optimize.txt"),
-                "proguard-rules.pro"
-            )
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
     }
     compileOptions {
@@ -86,6 +82,7 @@ android {
         }
     }
     buildFeatures {
+        prefab = true
         viewBinding = false
     }
 }
@@ -115,21 +112,25 @@ androidComponents {
                     if (oldFile.exists()) oldFile.delete()
                 }
 
-                val sourceFile = if (isDebug) {
-                    variant.artifacts.get(SingleArtifact.APK).get().asFile
-                } else {
-                    buildDir.get().asFile.resolve("intermediates/dex/release/minifyReleaseWithR8/classes.dex")
-                }
+                val sourceFile =
+                    if (isDebug) {
+                        variant.artifacts.get(SingleArtifact.APK).get().asFile
+                    } else {
+                        buildDir.get().asFile.resolve("intermediates/dex/release/minifyReleaseWithR8/classes.dex")
+                    }
 
                 val destFileName = if (isDebug) "service.apk" else "classes.dex"
                 sourceFile.copyTo(moduleFolder.resolve(destFileName), overwrite = true)
 
-                val soDir = buildDir.get()
-                    .asFile
-                    .resolve("intermediates/stripped_native_libs/$variantName/strip${capitalized}DebugSymbols/out/lib")
+                val soDir =
+                    buildDir
+                        .get()
+                        .asFile
+                        .resolve("intermediates/stripped_native_libs/$variantName/strip${capitalized}DebugSymbols/out/lib")
 
                 val allowedLibs = setOf("libinject.so", "libTrickyStoreOSS.so")
-                soDir.walk()
+                soDir
+                    .walk()
                     .filter { it.isFile && it.name in allowedLibs }
                     .forEach { soFile ->
                         val abiFolder = soFile.parentFile.name
@@ -153,8 +154,8 @@ androidComponents {
                 tempDir.mkdirs()
 
                 // Copy all files except module.prop
-
-                sourceDir.walkTopDown()
+                sourceDir
+                    .walkTopDown()
                     .filter { it.isFile && it.name != "module.prop" }
                     .forEach { sourceFile ->
                         val relativePath = sourceFile.relativeTo(sourceDir)
@@ -167,15 +168,15 @@ androidComponents {
                 val sourceProp = sourceDir.resolve("module.prop")
                 val destProp = tempDir.resolve("module.prop")
                 val content = sourceProp.readText()
-                val processedContent = content
-                    .replace("REPLACEMEVERCODE", gitCommitCount.toString())
-                    .replace("REPLACEMEVER", "$verName ($gitCommitCount-$gitCommitHash-$variantName)")
+                val processedContent =
+                    content
+                        .replace("REPLACEMEVERCODE", gitCommitCount.toString())
+                        .replace("REPLACEMEVER", "$verName ($gitCommitCount-$gitCommitHash-$variantName)")
                 destProp.writeText(processedContent)
             }
         }
 
         // Zip task uses the temp directory
-
         tasks.register<Zip>("zip${capitalized}") {
             dependsOn("prepareModuleFiles${capitalized}")
             archiveFileName.set("Tricky-Store-OSS-$verName-$gitCommitCount-$gitCommitHash-${capitalized}.zip")
@@ -183,8 +184,6 @@ androidComponents {
             from(tempModuleDir)
         }
 
-        project.afterEvaluate {
-            tasks["assemble${capitalized}"].finalizedBy("zip${capitalized}")
-        }
+        tasks.matching { it.name == "assemble${capitalized}" }.configureEach { finalizedBy("zip${capitalized}") }
     }
 }
