@@ -3,11 +3,12 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
+import com.android.build.api.artifact.SingleArtifact
+import com.android.build.api.variant.ApplicationVariant
 import java.io.ByteArrayOutputStream
 
 plugins {
     alias(libs.plugins.android.application)
-    alias(libs.plugins.kotlin.android)
 }
 
 fun String.execute(currentWorkingDir: File = File("./")): String {
@@ -29,14 +30,14 @@ val verName = "v2.1.0"
 
 android {
     namespace = "io.github.beakthoven.TrickyStoreOSS"
-    compileSdk = 36
-    ndkVersion = "28.2.13676358"
-    buildToolsVersion = "36.0.0"
+    compileSdk = 37
+    ndkVersion = "29.0.14206865"
+    buildToolsVersion = "37.0.0"
 
     defaultConfig {
         applicationId = "io.github.beakthoven.TrickyStoreOSS"
         minSdk = 29
-        targetSdk = 36
+        targetSdk = 37
         versionCode = gitCommitCount
         versionName = verName
 
@@ -96,28 +97,26 @@ dependencies {
     implementation(libs.org.lsposed.libcxx.libcxx)
 }
 
-afterEvaluate {
-    android.applicationVariants.forEach { variant ->
+androidComponents {
+    onVariants { variant: ApplicationVariant ->
         val variantName = variant.name
         val capitalized = variantName.replaceFirstChar { it.uppercase() }
         val tempModuleDir = project.layout.buildDirectory.dir("tmp/module-${variantName}")
-        
+
         tasks.register("copyFiles${capitalized}") {
             val moduleFolder = project.rootDir.resolve("module")
             val buildDir = project.layout.buildDirectory
-            
+
             doLast {
                 val isDebug = variantName.contains("debug", ignoreCase = true)
-                //val apkFile = variant.outputs.first().outputFile
 
                 listOf("service.apk", "classes.dex").forEach { fileName ->
                     val oldFile = moduleFolder.resolve(fileName)
                     if (oldFile.exists()) oldFile.delete()
                 }
 
-                // Select source file based on build type
                 val sourceFile = if (isDebug) {
-                    variant.outputs.first().outputFile
+                    variant.artifacts.get(SingleArtifact.APK).get().asFile
                 } else {
                     buildDir.get().asFile.resolve("intermediates/dex/release/minifyReleaseWithR8/classes.dex")
                 }
@@ -128,9 +127,7 @@ afterEvaluate {
                 val soDir = buildDir.get()
                     .asFile
                     .resolve("intermediates/stripped_native_libs/$variantName/strip${capitalized}DebugSymbols/out/lib")
-                
-                //apkFile.copyTo(moduleFolder.resolve("service.apk"), overwrite = true)
-                
+
                 val allowedLibs = setOf("libinject.so", "libTrickyStoreOSS.so")
                 soDir.walk()
                     .filter { it.isFile && it.name in allowedLibs }
@@ -141,20 +138,22 @@ afterEvaluate {
                     }
             }
         }
-        
+
         // Prepare temp directory with all files
+
         tasks.register("prepareModuleFiles${capitalized}") {
             dependsOn("copyFiles${capitalized}")
             val sourceDir = project.rootDir.resolve("module")
-            
+
             doLast {
                 val tempDir = tempModuleDir.get().asFile
-                
+
                 // Clean and create temp directory
                 tempDir.deleteRecursively()
                 tempDir.mkdirs()
-                
+
                 // Copy all files except module.prop
+
                 sourceDir.walkTopDown()
                     .filter { it.isFile && it.name != "module.prop" }
                     .forEach { sourceFile ->
@@ -163,7 +162,7 @@ afterEvaluate {
                         destFile.parentFile.mkdirs()
                         sourceFile.copyTo(destFile, overwrite = true)
                     }
-                
+
                 // Process module.prop
                 val sourceProp = sourceDir.resolve("module.prop")
                 val destProp = tempDir.resolve("module.prop")
@@ -174,15 +173,18 @@ afterEvaluate {
                 destProp.writeText(processedContent)
             }
         }
-        
+
         // Zip task uses the temp directory
+
         tasks.register<Zip>("zip${capitalized}") {
             dependsOn("prepareModuleFiles${capitalized}")
             archiveFileName.set("Tricky-Store-OSS-$verName-$gitCommitCount-$gitCommitHash-${capitalized}.zip")
             destinationDirectory.set(project.rootDir.resolve("out"))
             from(tempModuleDir)
         }
-        
-        tasks["assemble${capitalized}"].finalizedBy("zip${capitalized}")
+
+        project.afterEvaluate {
+            tasks["assemble${capitalized}"].finalizedBy("zip${capitalized}")
+        }
     }
 }

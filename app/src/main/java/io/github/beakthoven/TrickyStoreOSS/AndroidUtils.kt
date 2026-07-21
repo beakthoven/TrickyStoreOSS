@@ -177,6 +177,7 @@ object AndroidUtils {
     }
 
     private val osVersionMap = mapOf(
+        Build.VERSION_CODES.CINNAMON_BUN to 170000,
         Build.VERSION_CODES.BAKLAVA to 160000,
         Build.VERSION_CODES.VANILLA_ICE_CREAM to 150000,
         Build.VERSION_CODES.UPSIDE_DOWN_CAKE to 140000,
@@ -188,7 +189,7 @@ object AndroidUtils {
     )
 
     val osVersion: Int
-        get() = CachedAttestData?.osVersion ?: osVersionMap[Build.VERSION.SDK_INT] ?: 160000
+        get() = CachedAttestData?.osVersion ?: osVersionMap[Build.VERSION.SDK_INT] ?: 170000
 
     private val attestVersionMap = mapOf(
         Build.VERSION_CODES.Q to 4,                   // Keymaster 4.1
@@ -198,11 +199,12 @@ object AndroidUtils {
         Build.VERSION_CODES.TIRAMISU to 200,          // KeyMint 2.0
         Build.VERSION_CODES.UPSIDE_DOWN_CAKE to 300,  // KeyMint 3.0
         Build.VERSION_CODES.VANILLA_ICE_CREAM to 300, // KeyMint 3.0
-        Build.VERSION_CODES.BAKLAVA to 400            // KeyMint 4.0
+        Build.VERSION_CODES.BAKLAVA to 400,           // KeyMint 4.0
+        Build.VERSION_CODES.CINNAMON_BUN to 500       // KeyMint 5.0
     )
 
     val attestVersion: Int
-        get() = CachedAttestData?.attestVersion ?: attestVersionMap[Build.VERSION.SDK_INT] ?: 400
+        get() = CachedAttestData?.attestVersion ?: attestVersionMap[Build.VERSION.SDK_INT] ?: 500
 
     val keymasterVersion: Int
         get() = CachedAttestData?.keymasterVersion ?: if (attestVersion == 4) 41 else attestVersion
