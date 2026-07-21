@@ -7,19 +7,11 @@ plugins {
     alias(libs.plugins.android.library)
 }
 
-
 android {
     namespace = "io.github.beakthoven.stub"
     compileSdk = 36
-    buildToolsVersion = "36.0.0"
     defaultConfig {
         minSdk = 29
-    }
-
-    buildTypes {
-        release {
-            isMinifyEnabled = false
-        }
     }
 
     lint {
