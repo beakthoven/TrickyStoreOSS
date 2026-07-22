@@ -35,6 +35,8 @@ object Keystore2Interceptor : BaseKeystoreInterceptor() {
 
     private val getKeyEntryTransaction = transactCode("getKeyEntry")
     private val deleteKeyTransaction = transactCode("deleteKey")
+    private val listEntriesTransaction = transactCode("listEntries")
+    private val listEntriesBatchedTransaction = transactCode("listEntriesBatched")
     private val grantTransaction = transactCode("grant")
     private val ungrantTransaction = transactCode("ungrant")
     private val domainGrant: Int =
@@ -199,6 +201,14 @@ if (code == deleteKeyTransaction) {
                 .onFailure { Logger.e("getKeyEntry pre-hook failed uid=$callingUid", it) }
                 .getOrNull() ?: Skip
         }
+        if (
+            listEntriesTransaction >= 0 &&
+                (code == listEntriesTransaction || code == listEntriesBatchedTransaction) &&
+                KeyBoxUtils.hasKeyboxes() &&
+                (PkgConfig.needGenerate(callingUid) || PkgConfig.needHack(callingUid))
+        ) {
+            return Continue
+        }
         return Skip
     }
 
@@ -208,6 +218,42 @@ if (code == deleteKeyTransaction) {
         Logger.e("Failed to serialize KeyEntryResponse ($label), falling through to real keystore")
         return Continue
     }
+
+    private fun mergeListEntries(callingUid: Int, code: Int, data: Parcel, reply: Parcel, resultCode: Int): Result =
+        kotlin
+            .runCatching {
+                if (resultCode != 0) return@runCatching Skip
+                data.enforceInterface(IKeystoreService.DESCRIPTOR)
+                val domain = data.readInt()
+                data.readLong()
+                val batched = code == listEntriesBatchedTransaction
+                val startPastAlias = if (batched) data.readString() else null
+                if (domain != 0) return@runCatching Skip
+                if (reply.hasException()) return@runCatching Skip
+                val existing = reply.createTypedArray(KeyDescriptor.CREATOR) ?: emptyArray<KeyDescriptor?>()
+                val existingAliases = existing.mapNotNull { it?.alias }.toMutableSet()
+                val toAdd = ArrayList<KeyDescriptor>()
+                for (k in SecurityLevelInterceptor.keys.keys.filter { it.uid == callingUid }) {
+                    val alias = k.alias
+                    if (batched && startPastAlias != null && alias <= startPastAlias) continue
+                    if (alias in existingAliases) continue
+                    val kd = KeyDescriptor()
+                    kd.domain = 0
+                    kd.nspace = callingUid.toLong()
+                    kd.alias = alias
+                    toAdd.add(kd)
+                    existingAliases.add(alias)
+                }
+                if (toAdd.isEmpty()) return@runCatching Skip
+                val merged: Array<KeyDescriptor> = (existing.filterNotNull() + toAdd).sortedBy { it.alias ?: "" }.toTypedArray()
+                val p = Parcel.obtain()
+                p.writeNoException()
+                p.writeTypedArray(merged, 0)
+                Logger.i("listEntries${if (batched) "Batched" else ""}: merged ${toAdd.size} TSOSS alias(es) for uid=$callingUid")
+                OverrideReply(0, p)
+            }
+            .onFailure { Logger.e("listEntries merge failed uid=$callingUid", it) }
+            .getOrNull() ?: Skip
 
     override fun onPostTransact(
         target: IBinder,
@@ -220,6 +266,15 @@ if (code == deleteKeyTransaction) {
         resultCode: Int,
     ): Result {
         if (target != keystore || reply == null) return Skip
+
+        if (
+            listEntriesTransaction >= 0 &&
+                (code == listEntriesTransaction || code == listEntriesBatchedTransaction) &&
+                KeyBoxUtils.hasKeyboxes() &&
+                (PkgConfig.needGenerate(callingUid) || PkgConfig.needHack(callingUid))
+        ) {
+            return mergeListEntries(callingUid, code, data, reply, resultCode)
+        }
 
         if (code == deleteKeyTransaction && resultCode == 0) {
             kotlin
