@@ -19,17 +19,30 @@ import io.github.beakthoven.TrickyStoreOSS.config.PkgConfig
 import io.github.beakthoven.TrickyStoreOSS.interceptors.InterceptorUtils.createTypedObjectReply
 import io.github.beakthoven.TrickyStoreOSS.interceptors.InterceptorUtils.getTransactCode
 import io.github.beakthoven.TrickyStoreOSS.interceptors.InterceptorUtils.hasException
+import io.github.beakthoven.TrickyStoreOSS.interceptors.InterceptorUtils.successReply
+import io.github.beakthoven.TrickyStoreOSS.interceptors.InterceptorUtils.typedReply
 import io.github.beakthoven.TrickyStoreOSS.logging.Logger
 import io.github.beakthoven.TrickyStoreOSS.putCertificateChain
 
 @SuppressLint("BlockedPrivateApi")
 object Keystore2Interceptor : BaseKeystoreInterceptor() {
-    private fun transactCode(name: String, default: Int = -1): Int = try {
-        getTransactCode(IKeystoreService.Stub::class.java, name)
-    } catch (e: Exception) { default }
+    private fun transactCode(name: String, default: Int = -1): Int =
+        try {
+            getTransactCode(IKeystoreService.Stub::class.java, name)
+        } catch (e: Exception) {
+            default
+        }
 
     private val getKeyEntryTransaction = transactCode("getKeyEntry")
     private val deleteKeyTransaction = transactCode("deleteKey")
+    private val grantTransaction = transactCode("grant")
+    private val ungrantTransaction = transactCode("ungrant")
+    private val domainGrant: Int =
+        try {
+            Class.forName("android.system.keystore2.Domain").getField("GRANT").getInt(null)
+        } catch (e: Exception) {
+            1
+        }
 
     private const val MIN_KEY_DESCRIPTOR_BYTES = 28
 
@@ -44,8 +57,7 @@ object Keystore2Interceptor : BaseKeystoreInterceptor() {
     private fun setupSecurityLevelInterceptors(service: IBinder, backdoor: IBinder) {
         val ks = IKeystoreService.Stub.asInterface(service)
 
-        val tee = kotlin.runCatching { ks.getSecurityLevel(SecurityLevel.TRUSTED_ENVIRONMENT) }
-            .getOrNull()
+        val tee = kotlin.runCatching { ks.getSecurityLevel(SecurityLevel.TRUSTED_ENVIRONMENT) }.getOrNull()
         if (tee != null) {
             Logger.i("Registering for TEE SecurityLevel: $tee")
             val interceptor = SecurityLevelInterceptor(tee, SecurityLevel.TRUSTED_ENVIRONMENT)
@@ -55,8 +67,7 @@ object Keystore2Interceptor : BaseKeystoreInterceptor() {
             Logger.i("No TEE SecurityLevel found")
         }
 
-        val strongBox = kotlin.runCatching { ks.getSecurityLevel(SecurityLevel.STRONGBOX) }
-            .getOrNull()
+        val strongBox = kotlin.runCatching { ks.getSecurityLevel(SecurityLevel.STRONGBOX) }.getOrNull()
         if (strongBox != null) {
             Logger.i("Registering for StrongBox SecurityLevel: $strongBox")
             val interceptor = SecurityLevelInterceptor(strongBox, SecurityLevel.STRONGBOX)
@@ -92,52 +103,100 @@ if (code == deleteKeyTransaction) {
             return Continue
         }
 
-        if (code == getKeyEntryTransaction && KeyBoxUtils.hasKeyboxes()) {
-            return kotlin.runCatching {
-                Logger.d("intercept pre  $target uid=$callingUid pid=$callingPid dataSz=${data.dataSize()}")
-                data.enforceInterface(IKeystoreService.DESCRIPTOR)
-                if (data.dataAvail() < MIN_KEY_DESCRIPTOR_BYTES) {
-                    Logger.w("getKeyEntry: parcel too small (${data.dataAvail()}B), forwarding")
-                    return@runCatching Skip
-                }
-                val descriptor = data.readTypedObject(KeyDescriptor.CREATOR) ?: return@runCatching Skip
-                val aliasLabel = descriptor.alias ?: "<nspace=${descriptor.nspace}>"
-                when {
-                    PkgConfig.needGenerate(callingUid) -> {
-                        val response = SecurityLevelInterceptor.findGeneratedKey(callingUid, descriptor)?.response
-                        if (response != null) {
-                            Logger.d("Found generated response for uid=$callingUid alias=$aliasLabel")
-                            safeTypedObjectReply(response, "generate")
-                        } else {
-                            Logger.e("No generated response found for uid=$callingUid alias=$aliasLabel")
-                            Skip
-                        }
+        if (code == grantTransaction && grantTransaction >= 0 && KeyBoxUtils.hasKeyboxes()) {
+            return kotlin
+                .runCatching {
+                    data.enforceInterface(IKeystoreService.DESCRIPTOR)
+                    if (data.dataAvail() < 16) return@runCatching Skip
+                    val keyDescriptor = data.readTypedObject(KeyDescriptor.CREATOR) ?: return@runCatching Skip
+                    val granteeUid = data.readInt()
+                    data.readInt()
+                    val key = SecurityLevelInterceptor.resolveKey(callingUid, keyDescriptor)
+                    if (key != null && SecurityLevelInterceptor.keys.containsKey(key)) {
+                        val grantId = java.security.SecureRandom().nextLong()
+                        SecurityLevelInterceptor.grants[grantId] = SecurityLevelInterceptor.GrantInfo(callingUid, granteeUid, key)
+                        val grantDescriptor = KeyDescriptor()
+                        grantDescriptor.domain = domainGrant
+                        grantDescriptor.nspace = grantId
+                        grantDescriptor.alias = null
+                        Logger.i(
+                            "grant: created TSOSS grant grantId=$grantId for uid=$callingUid alias=${key.alias} granteeUid=$granteeUid"
+                        )
+                        return@runCatching typedReply(grantDescriptor)
                     }
-                    PkgConfig.needHack(callingUid) -> {
-                        if (SecurityLevelInterceptor.shouldSkipLeafHackFor(callingUid, descriptor)) {
-                            Logger.i("skip leaf hack for uid=$callingUid alias=$aliasLabel")
+                    Skip
+                }
+                .onFailure { Logger.e("grant pre-hook failed uid=$callingUid", it) }
+                .getOrNull() ?: Skip
+        }
+
+        if (code == ungrantTransaction && ungrantTransaction >= 0) {
+            return kotlin
+                .runCatching {
+                    data.enforceInterface(IKeystoreService.DESCRIPTOR)
+                    if (data.dataAvail() < 16) return@runCatching Skip
+                    val keyDescriptor = data.readTypedObject(KeyDescriptor.CREATOR) ?: return@runCatching Skip
+                    val granteeUid = data.readInt()
+                    val grant = SecurityLevelInterceptor.grants[keyDescriptor.nspace]
+                    if (grant != null && grant.granteeUid == granteeUid) {
+                        SecurityLevelInterceptor.grants.remove(keyDescriptor.nspace)
+                        Logger.d("ungrant: removed TSOSS grant grantId=${keyDescriptor.nspace}")
+                        return@runCatching successReply()
+                    }
+                    Skip
+                }
+                .onFailure { Logger.e("ungrant pre-hook failed", it) }
+                .getOrNull() ?: Skip
+        }
+
+        if (code == getKeyEntryTransaction && KeyBoxUtils.hasKeyboxes()) {
+            return kotlin
+                .runCatching {
+                    Logger.d("intercept pre  $target uid=$callingUid pid=$callingPid dataSz=${data.dataSize()}")
+                    data.enforceInterface(IKeystoreService.DESCRIPTOR)
+                    if (data.dataAvail() < 16) {
+                        Logger.w("getKeyEntry: parcel too small (${data.dataAvail()}B), forwarding")
+                        return@runCatching Skip
+                    }
+                    val descriptor = data.readTypedObject(KeyDescriptor.CREATOR) ?: return@runCatching Skip
+                    val aliasLabel = descriptor.alias ?: "<nspace=${descriptor.nspace}>"
+                    when {
+                        PkgConfig.needGenerate(callingUid) -> {
                             val response = SecurityLevelInterceptor.findGeneratedKey(callingUid, descriptor)?.response
                             if (response != null) {
                                 Logger.d("Found generated response for uid=$callingUid alias=$aliasLabel")
-                                safeTypedObjectReply(response, "skipLeafHack")
+                                safeTypedObjectReply(response, "generate")
                             } else {
-                                Logger.d("No generated response found for uid=$callingUid alias=$aliasLabel")
-                                Continue
-                            }
-                        } else {
-                            val patched = SecurityLevelInterceptor.resolvePatchedResponse(callingUid, descriptor)
-                            if (patched != null) {
-                                Logger.i("Serving cached patched response for uid=$callingUid alias=$aliasLabel")
-                                safeTypedObjectReply(patched, "patched")
-                            } else {
-                                Logger.d("proceeding with leaf hack for uid=$callingUid alias=$aliasLabel")
-                                Continue
+                                Logger.e("No generated response found for uid=$callingUid alias=$aliasLabel")
+                                Skip
                             }
                         }
+                        PkgConfig.needHack(callingUid) -> {
+                            if (SecurityLevelInterceptor.shouldSkipLeafHackFor(callingUid, descriptor)) {
+                                Logger.i("skip leaf hack for uid=$callingUid alias=$aliasLabel")
+                                val response = SecurityLevelInterceptor.findGeneratedKey(callingUid, descriptor)?.response
+                                if (response != null) {
+                                    Logger.d("Found generated response for uid=$callingUid alias=$aliasLabel")
+                                    safeTypedObjectReply(response, "skipLeafHack")
+                                } else {
+                                    Logger.d("No generated response found for uid=$callingUid alias=$aliasLabel")
+                                    Continue
+                                }
+                            } else {
+                                val patched = SecurityLevelInterceptor.resolvePatchedResponse(callingUid, descriptor)
+                                if (patched != null) {
+                                    Logger.i("Serving cached patched response for uid=$callingUid alias=$aliasLabel")
+                                    safeTypedObjectReply(patched, "patched")
+                                } else {
+                                    Logger.d("proceeding with leaf hack for uid=$callingUid alias=$aliasLabel")
+                                    Continue
+                                }
+                            }
+                        }
+                        else -> Skip
                     }
-                    else -> Skip
                 }
-            }.onFailure { Logger.e("getKeyEntry pre-hook failed uid=$callingUid", it) }
+                .onFailure { Logger.e("getKeyEntry pre-hook failed uid=$callingUid", it) }
                 .getOrNull() ?: Skip
         }
         return Skip
@@ -158,21 +217,23 @@ if (code == deleteKeyTransaction) {
         callingPid: Int,
         data: Parcel,
         reply: Parcel?,
-        resultCode: Int
+        resultCode: Int,
     ): Result {
         if (target != keystore || reply == null) return Skip
 
         if (code == deleteKeyTransaction && resultCode == 0) {
-            kotlin.runCatching {
-                data.enforceInterface(IKeystoreService.DESCRIPTOR)
-                val keyDescriptor = data.readTypedObject(KeyDescriptor.CREATOR)
-                if (keyDescriptor != null) {
-                    val alias = keyDescriptor.alias
-                    if (alias != null) {
-                        SecurityLevelInterceptor.cleanupKey(callingUid, alias)
+            kotlin
+                .runCatching {
+                    data.enforceInterface(IKeystoreService.DESCRIPTOR)
+                    val keyDescriptor = data.readTypedObject(KeyDescriptor.CREATOR)
+                    if (keyDescriptor != null) {
+                        val alias = keyDescriptor.alias
+                        if (alias != null) {
+                            SecurityLevelInterceptor.cleanupKey(callingUid, alias)
+                        }
                     }
                 }
-            }.onFailure { Logger.e("deleteKey cleanup failed", it) }
+                .onFailure { Logger.e("deleteKey cleanup failed", it) }
             return Skip
         }
 
@@ -186,7 +247,7 @@ if (code == deleteKeyTransaction) {
                 val response = reply.readTypedObject(KeyEntryResponse.CREATOR)
                 if (response != null) {
                     val chain = CertificateUtils.run { response.getCertificateChain() }
-                if (chain != null) {
+                    if (chain != null) {
                         val newChain = CertificateHack.hackCertificateChain(chain)
                         response.putCertificateChain(newChain).getOrThrow()
                         response.metadata?.authorizations = CertificateHack.patchAuthorizations(response.metadata?.authorizations)
@@ -199,7 +260,10 @@ if (code == deleteKeyTransaction) {
                     p.recycle()
                 }
             } catch (t: Throwable) {
-                Logger.w("getKeyEntry post-hook chain patch failed for uid=$callingUid pid=$callingPid; serving unpatched real chain", t)
+                Logger.w(
+                    "getKeyEntry post-hook chain patch failed for uid=$callingUid pid=$callingPid; serving unpatched real chain",
+                    t,
+                )
                 p.recycle()
             }
         }

@@ -72,6 +72,13 @@ class SecurityLevelInterceptor(private val original: IKeystoreSecurityLevel, pri
                 findGeneratedKeyByKeyId(uid, descriptor.nspace)?.let {
                     return it
                 }
+                grants[descriptor.nspace]
+                    ?.takeIf { it.granteeUid == uid }
+                    ?.let { g ->
+                        keys[g.key]?.let {
+                            return it
+                        }
+                    }
             }
             return descriptor.alias?.let { keys[Key(uid, it)] }
         }
@@ -83,6 +90,13 @@ class SecurityLevelInterceptor(private val original: IKeystoreSecurityLevel, pri
                     ?.takeIf { it.uid == uid }
                     ?.let {
                         return patchedResponses[it]
+                    }
+                grants[descriptor.nspace]
+                    ?.takeIf { it.granteeUid == uid }
+                    ?.let { g ->
+                        patchedResponses[g.key]?.let {
+                            return it
+                        }
                     }
             }
             return descriptor.alias?.let { patchedResponses[Key(uid, it)] }
@@ -96,9 +110,16 @@ class SecurityLevelInterceptor(private val original: IKeystoreSecurityLevel, pri
                     ?.let {
                         return skipLeafHacks[it] ?: false
                     }
+                grants[descriptor.nspace]
+                    ?.takeIf { it.granteeUid == uid }
+                    ?.let { g ->
+                        return skipLeafHacks[g.key] ?: false
+                    }
             }
             return descriptor.alias?.let { skipLeafHacks[Key(uid, it)] } ?: false
         }
+
+        @Keep val grants = ConcurrentHashMap<Long, GrantInfo>()
 
         @Keep
         fun resolveKey(uid: Int, descriptor: KeyDescriptor): Key? {
@@ -135,6 +156,7 @@ class SecurityLevelInterceptor(private val original: IKeystoreSecurityLevel, pri
             patchedResponses.clear()
             keysByNspace.clear()
             usageRemaining.clear()
+            grants.clear()
             PersistenceManager.clearAll()
         }
     }
@@ -147,6 +169,8 @@ class SecurityLevelInterceptor(private val original: IKeystoreSecurityLevel, pri
         val response: KeyEntryResponse,
         val params: CertificateGen.KeyGenParameters,
     )
+
+    data class GrantInfo(val ownerUid: Int, val granteeUid: Int, val key: Key)
 
     override fun onPreTransact(target: IBinder, code: Int, flags: Int, callingUid: Int, callingPid: Int, data: Parcel): Result {
         if (code == importKeyTransaction) {
