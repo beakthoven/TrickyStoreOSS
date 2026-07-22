@@ -14,17 +14,17 @@ public final class KeymasterDefs {
     }
 
     // Tag types.
-    public static final int KM_INVALID = 0 << 28;
-    public static final int KM_ENUM = 1 << 28;
-    public static final int KM_ENUM_REP = 2 << 28;
-    public static final int KM_UINT = 3 << 28;
-    public static final int KM_UINT_REP = 4 << 28;
-    public static final int KM_ULONG = 5 << 28;
-    public static final int KM_DATE = 6 << 28;
-    public static final int KM_BOOL = 7 << 28;
-    public static final int KM_BIGNUM = 8 << 28;
-    public static final int KM_BYTES = 9 << 28;
-    public static final int KM_ULONG_REP = 10 << 28;
+    public static final int KM_INVALID = (0 << 28);
+    public static final int KM_ENUM = (1 << 28);
+    public static final int KM_ENUM_REP = (2 << 28);
+    public static final int KM_UINT = (3 << 28);
+    public static final int KM_UINT_REP = (4 << 28);
+    public static final int KM_ULONG = (5 << 28);
+    public static final int KM_DATE = (6 << 28);
+    public static final int KM_BOOL = (7 << 28);
+    public static final int KM_BIGNUM = (8 << 28);
+    public static final int KM_BYTES = (9 << 28);
+    public static final int KM_ULONG_REP = (10 << 28);
 
     // Tag values.
     public static final int KM_TAG_INVALID = KM_INVALID | 0;
@@ -36,21 +36,19 @@ public final class KeymasterDefs {
     public static final int KM_TAG_PADDING = KM_ENUM_REP | 6;
     public static final int KM_TAG_CALLER_NONCE = KM_BOOL | 7;
     public static final int KM_TAG_MIN_MAC_LENGTH = KM_UINT | 8;
-
-    public static final int KM_TAG_RESCOPING_ADD = KM_ENUM_REP | 101;
-    public static final int KM_TAG_RESCOPING_DEL = KM_ENUM_REP | 102;
-    public static final int KM_TAG_BLOB_USAGE_REQUIREMENTS = KM_ENUM | 705;
+    public static final int KM_TAG_EC_CURVE = KM_ENUM | 10;
 
     public static final int KM_TAG_RSA_PUBLIC_EXPONENT = KM_ULONG | 200;
     public static final int KM_TAG_INCLUDE_UNIQUE_ID = KM_BOOL | 202;
+    public static final int KM_TAG_RSA_OAEP_MGF_DIGEST = KM_ENUM_REP | 203;
 
     public static final int KM_TAG_ACTIVE_DATETIME = KM_DATE | 400;
     public static final int KM_TAG_ORIGINATION_EXPIRE_DATETIME = KM_DATE | 401;
     public static final int KM_TAG_USAGE_EXPIRE_DATETIME = KM_DATE | 402;
     public static final int KM_TAG_MIN_SECONDS_BETWEEN_OPS = KM_UINT | 403;
     public static final int KM_TAG_MAX_USES_PER_BOOT = KM_UINT | 404;
+    public static final int KM_TAG_USAGE_COUNT_LIMIT = KM_UINT | 405;
 
-    public static final int KM_TAG_ALL_USERS = KM_BOOL | 500;
     public static final int KM_TAG_USER_ID = KM_UINT | 501;
     public static final int KM_TAG_USER_SECURE_ID = KM_ULONG_REP | 502;
     public static final int KM_TAG_NO_AUTH_REQUIRED = KM_BOOL | 503;
@@ -61,12 +59,11 @@ public final class KeymasterDefs {
     public static final int KM_TAG_TRUSTED_CONFIRMATION_REQUIRED = KM_BOOL | 508;
     public static final int KM_TAG_UNLOCKED_DEVICE_REQUIRED = KM_BOOL | 509;
 
-    public static final int KM_TAG_ALL_APPLICATIONS = KM_BOOL | 600;
     public static final int KM_TAG_APPLICATION_ID = KM_BYTES | 601;
 
     public static final int KM_TAG_CREATION_DATETIME = KM_DATE | 701;
     public static final int KM_TAG_ORIGIN = KM_ENUM | 702;
-    public static final int KM_TAG_ROLLBACK_RESISTANT = KM_BOOL | 703;
+    public static final int KM_TAG_ROLLBACK_RESISTANT = KM_BOOL | 303;
     public static final int KM_TAG_ROOT_OF_TRUST = KM_BYTES | 704;
     public static final int KM_TAG_UNIQUE_ID = KM_BYTES | 707;
     public static final int KM_TAG_ATTESTATION_CHALLENGE = KM_BYTES | 708;
@@ -78,12 +75,21 @@ public final class KeymasterDefs {
     public static final int KM_TAG_ATTESTATION_ID_MEID = KM_BYTES | 715;
     public static final int KM_TAG_ATTESTATION_ID_MANUFACTURER = KM_BYTES | 716;
     public static final int KM_TAG_ATTESTATION_ID_MODEL = KM_BYTES | 717;
+    public static final int KM_TAG_VENDOR_PATCHLEVEL = KM_UINT | 718;
+    public static final int KM_TAG_BOOT_PATCHLEVEL = KM_UINT | 719;
     public static final int KM_TAG_DEVICE_UNIQUE_ATTESTATION = KM_BOOL | 720;
+    public static final int KM_TAG_ATTESTATION_ID_SECOND_IMEI = KM_BYTES | 723;
+    public static final int KM_TAG_MODULE_HASH = KM_BYTES | 724;
 
     public static final int KM_TAG_ASSOCIATED_DATA = KM_BYTES | 1000;
     public static final int KM_TAG_NONCE = KM_BYTES | 1001;
-    public static final int KM_TAG_AUTH_TOKEN = KM_BYTES | 1002;
     public static final int KM_TAG_MAC_LENGTH = KM_UINT | 1003;
+    public static final int KM_TAG_RESET_SINCE_ID_ROTATION = KM_BOOL | 1004;
+    public static final int KM_TAG_CONFIRMATION_TOKEN = KM_BYTES | 1005;
+    public static final int KM_TAG_CERTIFICATE_SERIAL = KM_BIGNUM | 1006;
+    public static final int KM_TAG_CERTIFICATE_SUBJECT = KM_BYTES | 1007;
+    public static final int KM_TAG_CERTIFICATE_NOT_BEFORE = KM_DATE | 1008;
+    public static final int KM_TAG_CERTIFICATE_NOT_AFTER = KM_DATE | 1009;
 
     // Algorithm values.
     public static final int KM_ALGORITHM_RSA = 1;
@@ -131,6 +137,8 @@ public final class KeymasterDefs {
     public static final int KM_PURPOSE_SIGN = 2;
     public static final int KM_PURPOSE_VERIFY = 3;
     public static final int KM_PURPOSE_WRAP = 5;
+    public static final int KM_PURPOSE_AGREE_KEY = 6;
+    public static final int KM_PURPOSE_ATTEST_KEY = 7;
 
     // Key formats.
     public static final int KM_KEY_FORMAT_X509 = 0;
@@ -140,6 +148,11 @@ public final class KeymasterDefs {
     // User authenticators.
     public static final int HW_AUTH_PASSWORD = 1 << 0;
     public static final int HW_AUTH_BIOMETRIC = 1 << 1;
+
+    // Security Levels.
+    public static final int KM_SECURITY_LEVEL_SOFTWARE = 0;
+    public static final int KM_SECURITY_LEVEL_TRUSTED_ENVIRONMENT = 1;
+    public static final int KM_SECURITY_LEVEL_STRONGBOX = 2;
 
     // Error codes.
     public static final int KM_ERROR_OK = 0;
@@ -184,7 +197,6 @@ public final class KeymasterDefs {
     public static final int KM_ERROR_UNSUPPORTED_TAG = -39;
     public static final int KM_ERROR_INVALID_TAG = -40;
     public static final int KM_ERROR_MEMORY_ALLOCATION_FAILED = -41;
-    public static final int KM_ERROR_INVALID_RESCOPING = -42;
     public static final int KM_ERROR_IMPORT_PARAMETER_MISMATCH = -44;
     public static final int KM_ERROR_SECURE_HW_ACCESS_DENIED = -45;
     public static final int KM_ERROR_OPERATION_CANCELLED = -46;
@@ -201,11 +213,36 @@ public final class KeymasterDefs {
     public static final int KM_ERROR_INVALID_MAC_LENGTH = -57;
     public static final int KM_ERROR_MISSING_MIN_MAC_LENGTH = -58;
     public static final int KM_ERROR_UNSUPPORTED_MIN_MAC_LENGTH = -59;
+    public static final int KM_ERROR_UNSUPPORTED_KDF = -60;
+    public static final int KM_ERROR_UNSUPPORTED_EC_CURVE = -61;
+    // -62 is KEY_REQUIRES_UPGRADE and is handled by Keystore.
+    public static final int KM_ERROR_ATTESTATION_CHALLENGE_MISSING = -63;
+    public static final int KM_ERROR_KEYMINT_NOT_CONFIGURED = -64;
+    public static final int KM_ERROR_ATTESTATION_APPLICATION_ID_MISSING = -65;
     public static final int KM_ERROR_CANNOT_ATTEST_IDS = -66;
+    public static final int KM_ERROR_ROLLBACK_RESISTANCE_UNAVAILABLE = -67;
+    public static final int KM_ERROR_HARDWARE_TYPE_UNAVAILABLE = -68;
+    public static final int KM_ERROR_PROOF_OF_PRESENCE_REQUIRED = -69;
+    public static final int KM_ERROR_CONCURRENT_PROOF_OF_PRESENCE_REQUESTED = -70;
+    public static final int KM_ERROR_NO_USER_CONFIRMATION = -71;
     public static final int KM_ERROR_DEVICE_LOCKED = -72;
+    public static final int KM_ERROR_EARLY_BOOT_ENDED = -73;
+    public static final int KM_ERROR_ATTESTATION_KEYS_NOT_PROVISIONED = -74;
+    public static final int KM_ERROR_ATTESTATION_IDS_NOT_PROVISIONED = -75;
+    public static final int KM_ERROR_INVALID_OPERATION = -76;
+    public static final int KM_ERROR_STORAGE_KEY_UNSUPPORTED = -77;
+    public static final int KM_ERROR_INCOMPATIBLE_MGF_DIGEST = -78;
+    public static final int KM_ERROR_UNSUPPORTED_MGF_DIGEST = -79;
+    public static final int KM_ERROR_MISSING_NOT_BEFORE = -80;
+    public static final int KM_ERROR_MISSING_NOT_AFTER = -81;
+    public static final int KM_ERROR_MISSING_ISSUER_SUBJECT = -82;
+    public static final int KM_ERROR_INVALID_ISSUER_SUBJECT = -83;
+    public static final int KM_ERROR_BOOT_LEVEL_EXCEEDED = -84;
+    public static final int KM_ERROR_HARDWARE_NOT_YET_AVAILABLE = -85;
     public static final int KM_ERROR_UNIMPLEMENTED = -100;
     public static final int KM_ERROR_VERSION_MISMATCH = -101;
     public static final int KM_ERROR_UNKNOWN_ERROR = -1000;
+
 
     public static final Map<Integer, String> sErrorCodeToString = new HashMap<Integer, String>();
     static {
@@ -249,6 +286,8 @@ public final class KeymasterDefs {
         sErrorCodeToString.put(KM_ERROR_INVALID_MAC_LENGTH,
                 "Invalid MAC or authentication tag length");
         sErrorCodeToString.put(KM_ERROR_CANNOT_ATTEST_IDS, "Unable to attest device ids");
+        sErrorCodeToString.put(KM_ERROR_HARDWARE_TYPE_UNAVAILABLE, "Requested security level "
+                        + "(likely Strongbox) is not available.");
         sErrorCodeToString.put(KM_ERROR_DEVICE_LOCKED, "Device locked");
         sErrorCodeToString.put(KM_ERROR_UNIMPLEMENTED, "Not implemented");
         sErrorCodeToString.put(KM_ERROR_UNKNOWN_ERROR, "Unknown error");
