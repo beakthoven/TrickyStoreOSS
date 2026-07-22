@@ -22,10 +22,12 @@ import androidx.annotation.Keep
 import io.github.beakthoven.TrickyStoreOSS.AndroidUtils
 import io.github.beakthoven.TrickyStoreOSS.CertificateGen
 import io.github.beakthoven.TrickyStoreOSS.CertificateHack
+import io.github.beakthoven.TrickyStoreOSS.CertificateUtils
 import io.github.beakthoven.TrickyStoreOSS.PersistenceManager
 import io.github.beakthoven.TrickyStoreOSS.config.PkgConfig
 import io.github.beakthoven.TrickyStoreOSS.interceptors.InterceptorUtils.errorReply
 import io.github.beakthoven.TrickyStoreOSS.interceptors.InterceptorUtils.getTransactCode
+import io.github.beakthoven.TrickyStoreOSS.interceptors.InterceptorUtils.hasException
 import io.github.beakthoven.TrickyStoreOSS.interceptors.InterceptorUtils.typedReply
 import io.github.beakthoven.TrickyStoreOSS.logging.Logger
 import io.github.beakthoven.TrickyStoreOSS.putCertificateChain
@@ -42,6 +44,7 @@ class SecurityLevelInterceptor(private val original: IKeystoreSecurityLevel, pri
     companion object {
         private val generateKeyTransaction = getTransactCode(IKeystoreSecurityLevel.Stub::class.java, "generateKey")
         private val createOperationTransaction = getTransactCode(IKeystoreSecurityLevel.Stub::class.java, "createOperation")
+        private val importKeyTransaction = getTransactCode(IKeystoreSecurityLevel.Stub::class.java, "importKey")
 
         private val secureRandom = SecureRandom()
 
@@ -146,6 +149,9 @@ class SecurityLevelInterceptor(private val original: IKeystoreSecurityLevel, pri
     )
 
     override fun onPreTransact(target: IBinder, code: Int, flags: Int, callingUid: Int, callingPid: Int, data: Parcel): Result {
+        if (code == importKeyTransaction) {
+            return if (PkgConfig.needHack(callingUid) || PkgConfig.needGenerate(callingUid)) Continue else Skip
+        }
         if (code == generateKeyTransaction) {
             Logger.i("intercept key gen uid=$callingUid pid=$callingPid")
             kotlin
@@ -186,8 +192,10 @@ class SecurityLevelInterceptor(private val original: IKeystoreSecurityLevel, pri
                             return storeGeneratedKey(callingUid, keyDescriptor, kgp, pair.first, null, pair.second, true)
                         } else {
                             skipLeafHacks.remove(Key(callingUid, keyDescriptor.alias))
-                            Logger.i("Cleared skip flag for non-attestation key: uid=$callingUid alias=${keyDescriptor.alias}")
-                            return Skip
+                            Logger.i(
+                                "Forwarding non-attestation key to real keystore (post-hook will patch): uid=$callingUid alias=${keyDescriptor.alias}"
+                            )
+                            return Continue
                         }
                     }
                 }
@@ -224,6 +232,61 @@ class SecurityLevelInterceptor(private val original: IKeystoreSecurityLevel, pri
                     .onFailure { Logger.e("handle createOperation request", it) }
                     .getOrNull()
             if (result != null) return result
+        }
+        return Skip
+    }
+
+    override fun onPostTransact(
+        target: IBinder,
+        code: Int,
+        flags: Int,
+        callingUid: Int,
+        callingPid: Int,
+        data: Parcel,
+        reply: Parcel?,
+        resultCode: Int,
+    ): Result {
+        if (code == generateKeyTransaction && reply != null && !reply.hasException()) {
+            val result =
+                kotlin
+                    .runCatching {
+                        data.enforceInterface(IKeystoreSecurityLevel.DESCRIPTOR)
+                        val keyDescriptor = data.readTypedObject(KeyDescriptor.CREATOR) ?: return@runCatching null
+                        val metadata = reply.readTypedObject(KeyMetadata.CREATOR) ?: return@runCatching null
+                        val chain =
+                            CertificateUtils.run {
+                                val leaf = metadata.certificate?.toCertificate()
+                                val rest = metadata.certificateChain?.toCertificates() ?: emptyList()
+                                if (leaf == null) null else (listOf<Certificate>(leaf) + rest).toTypedArray()
+                            } ?: return@runCatching null
+                        val patched = CertificateHack.hackCertificateChain(chain)
+                        metadata.putCertificateChain(patched).getOrThrow()
+                        metadata.authorizations = CertificateHack.patchAuthorizations(metadata.authorizations)
+                        val response =
+                            KeyEntryResponse().apply {
+                                this.metadata = metadata
+                                iSecurityLevel = original
+                            }
+                        patchedResponses[Key(callingUid, keyDescriptor.alias)] = response
+                        metadata.key?.nspace?.let { nspace ->
+                            if (nspace != 0L) keysByNspace[nspace] = Key(callingUid, keyDescriptor.alias)
+                        }
+                        Logger.i("Patched generateKey chain for uid=$callingUid alias=${keyDescriptor.alias}")
+                        typedReply(metadata)
+                    }
+                    .onFailure { Logger.e("patch generateKey reply", it) }
+                    .getOrNull()
+            if (result != null) return result
+        }
+        if (code == importKeyTransaction && reply != null && !reply.hasException()) {
+            kotlin
+                .runCatching {
+                    data.enforceInterface(IKeystoreSecurityLevel.DESCRIPTOR)
+                    val keyDescriptor = data.readTypedObject(KeyDescriptor.CREATOR) ?: return@runCatching
+                    Logger.i("importKey succeeded, clearing generated state for uid=$callingUid alias=${keyDescriptor.alias}")
+                    cleanupKey(callingUid, keyDescriptor.alias)
+                }
+                .onFailure { Logger.e("parse importKey request", it) }
         }
         return Skip
     }
