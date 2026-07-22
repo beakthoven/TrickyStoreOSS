@@ -263,8 +263,17 @@ object CertificateGen {
             }
         if (keyUsageBits != 0) builder.addExtension(Extension.keyUsage, true, KeyUsage(keyUsageBits))
         builder.addExtension(buildAttestExtension(params, uid, securityLevel))
+        val signerAlgorithm =
+            when (signingKeyPair.private) {
+                is java.security.interfaces.ECPrivateKey -> "ECDSA"
+                is java.security.interfaces.RSAPrivateKey -> "RSA"
+                else ->
+                    throw UnsupportedOperationException(
+                        "Unsupported attestation signing key algorithm: ${signingKeyPair.private.algorithm}"
+                    )
+            }
         val signer =
-            JcaContentSignerBuilder("${digestJcaName(params)}with${if (params.algorithm == Algorithm.EC) "ECDSA" else "RSA"}")
+            JcaContentSignerBuilder("${digestJcaName(params)}with$signerAlgorithm")
                 .setProvider(BouncyCastleProvider.PROVIDER_NAME)
                 .build(signingKeyPair.private)
         return JcaX509CertificateConverter().setProvider(BouncyCastleProvider.PROVIDER_NAME).getCertificate(builder.build(signer))

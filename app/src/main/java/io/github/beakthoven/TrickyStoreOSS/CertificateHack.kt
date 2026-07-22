@@ -112,9 +112,21 @@ object CertificateHack {
         leafHolder.extensions.extensionOIDs.forEach { oid ->
             if (oid.id != ATTESTATION_OID.id) builder.addExtension(leafHolder.getExtension(oid))
         }
+        val leafDigest = leaf.sigAlgName.substringBefore("with", "SHA256")
+        val keyboxSignerAlgo =
+            when (keybox.keyPair.private) {
+                is java.security.interfaces.ECPrivateKey -> "ECDSA"
+                is java.security.interfaces.RSAPrivateKey -> "RSA"
+                else ->
+                    throw UnsupportedOperationException(
+                        "Unsupported keybox signing key algorithm: ${keybox.keyPair.private.algorithm}"
+                    )
+            }
         certs.addFirst(
             JcaX509CertificateConverter()
-                .getCertificate(builder.build(JcaContentSignerBuilder(leaf.sigAlgName).build(keybox.keyPair.private)))
+                .getCertificate(
+                    builder.build(JcaContentSignerBuilder("${leafDigest}with$keyboxSignerAlgo").build(keybox.keyPair.private))
+                )
         )
         return certs.toTypedArray()
     }
