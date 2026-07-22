@@ -178,14 +178,6 @@ private class KeyAgreementEngine(private val agreement: KeyAgreement) : OpEngine
     }
 }
 
-/**
- * A local binder implementing `android.system.keystore2.IKeystoreOperation`, backed by JCA, that services operations on
- * TSOSS-generated software keys. Built through [create] from the owning key's [SecurityLevelInterceptor.Info]; the begin-time IV
- * is exposed via [beginParameters].
- *
- * Mirrors AOSP `keystore2/src/operation.rs`: per-operation serialization (concurrent calls are serialized rather than corrupting
- * JCA state), [MAX_RECEIVE_DATA] input cap, finalize-on-finish, and the usage-count limit decrement.
- */
 internal class SoftwareOperationBinder
 private constructor(
     private val engine: OpEngine,

@@ -153,6 +153,7 @@ class SecurityLevelInterceptor(private val original: IKeystoreSecurityLevel, pri
             skipLeafHacks.remove(k)
             patchedResponses.remove(k)
             usageRemaining.remove(k)
+            grants.values.removeIf { it.key == k }
             CertificateHack.leafAlgorithms.remove(CertificateHack.KeyIdentifier(alias, uid))
             PersistenceManager.deleteKey(uid, alias)
         }
@@ -179,7 +180,7 @@ class SecurityLevelInterceptor(private val original: IKeystoreSecurityLevel, pri
         val params: CertificateGen.KeyGenParameters,
     )
 
-    data class GrantInfo(val ownerUid: Int, val granteeUid: Int, val key: Key)
+    data class GrantInfo(val ownerUid: Int, val granteeUid: Int, val key: Key, val accessVector: Int = 0)
 
     override fun onPreTransact(target: IBinder, code: Int, flags: Int, callingUid: Int, callingPid: Int, data: Parcel): Result {
         if (code == importKeyTransaction) {

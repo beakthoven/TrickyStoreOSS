@@ -12,11 +12,14 @@ import android.os.Parcel
 import android.system.keystore2.IKeystoreService
 import android.system.keystore2.KeyDescriptor
 import android.system.keystore2.KeyEntryResponse
+import android.system.keystore2.KeyPermission
+import android.system.keystore2.ResponseCode
 import io.github.beakthoven.TrickyStoreOSS.CertificateHack
 import io.github.beakthoven.TrickyStoreOSS.CertificateUtils
 import io.github.beakthoven.TrickyStoreOSS.KeyBoxUtils
 import io.github.beakthoven.TrickyStoreOSS.config.PkgConfig
 import io.github.beakthoven.TrickyStoreOSS.interceptors.InterceptorUtils.createTypedObjectReply
+import io.github.beakthoven.TrickyStoreOSS.interceptors.InterceptorUtils.errorReply
 import io.github.beakthoven.TrickyStoreOSS.interceptors.InterceptorUtils.getTransactCode
 import io.github.beakthoven.TrickyStoreOSS.interceptors.InterceptorUtils.hasException
 import io.github.beakthoven.TrickyStoreOSS.interceptors.InterceptorUtils.successReply
@@ -48,7 +51,6 @@ object Keystore2Interceptor : BaseKeystoreInterceptor() {
         }
 
     private const val MIN_KEY_DESCRIPTOR_BYTES = 28
-
     override val serviceName = "android.system.keystore2.IKeystoreService/default"
     override val processName = "keystore2"
     override val injectionCommand = "exec ./inject `pidof keystore2` libTrickyStoreOSS.so entry"
@@ -81,28 +83,31 @@ object Keystore2Interceptor : BaseKeystoreInterceptor() {
         }
     }
 
-    override fun onPreTransact(
-        target: IBinder,
-        code: Int,
-        flags: Int,
-        callingUid: Int,
-        callingPid: Int,
-        data: Parcel
-    ): Result {
-if (code == deleteKeyTransaction) {
-            kotlin.runCatching {
-                data.enforceInterface(IKeystoreService.DESCRIPTOR)
-                if (data.dataAvail() < MIN_KEY_DESCRIPTOR_BYTES) return@runCatching
-                val keyDescriptor = data.readTypedObject(KeyDescriptor.CREATOR)
-                Logger.d("deleteKey pre-hook: uid=$callingUid alias=${keyDescriptor?.alias} domain=${keyDescriptor?.domain}")
-                if (keyDescriptor != null) {
-                    val alias = keyDescriptor.alias
-                    if (alias != null) {
-                        SecurityLevelInterceptor.cleanupKey(callingUid, alias)
-                        Logger.d("deleteKey pre-hook: cleaned up uid=$callingUid alias=$alias")
+    override fun onPreTransact(target: IBinder, code: Int, flags: Int, callingUid: Int, callingPid: Int, data: Parcel): Result {
+        if (code == deleteKeyTransaction) {
+            val result =
+                kotlin
+                    .runCatching {
+                        data.enforceInterface(IKeystoreService.DESCRIPTOR)
+                        if (data.dataAvail() < MIN_KEY_DESCRIPTOR_BYTES) return@runCatching null
+                        val keyDescriptor = data.readTypedObject(KeyDescriptor.CREATOR)
+                        Logger.d("deleteKey pre-hook: uid=$callingUid alias=${keyDescriptor?.alias} domain=${keyDescriptor?.domain}")
+                        if (keyDescriptor != null) {
+                            val alias = keyDescriptor.alias
+                            if (alias != null) {
+                                val key = SecurityLevelInterceptor.Key(callingUid, alias)
+                                val isSoftware = SecurityLevelInterceptor.keys.containsKey(key) &&
+                                    !SecurityLevelInterceptor.skipLeafHacks.containsKey(key)
+                                SecurityLevelInterceptor.cleanupKey(callingUid, alias)
+                                Logger.d("deleteKey pre-hook: cleaned up uid=$callingUid alias=$alias")
+                                if (isSoftware) return@runCatching successReply()
+                            }
+                        }
+                        null
                     }
-                }
-            }.onFailure { Logger.e("deleteKey pre-hook parse failed", it) }
+                    .onFailure { Logger.e("deleteKey pre-hook parse failed", it) }
+                    .getOrNull()
+            if (result != null) return result
             return Continue
         }
 
@@ -111,12 +116,20 @@ if (code == deleteKeyTransaction) {
                 kotlin
                     .runCatching {
                         data.enforceInterface(IKeystoreService.DESCRIPTOR)
-                        if (data.dataAvail() < 16) return@runCatching null
-                        val keyDescriptor = data.readTypedObject(KeyDescriptor.CREATOR) ?: return@runCatching null
-                        val publicCert = data.createByteArray()
-                        val certificateChain = data.createByteArray()
-                        val key = SecurityLevelInterceptor.resolveKey(callingUid, keyDescriptor)
-                        if (key != null && SecurityLevelInterceptor.keys.containsKey(key)) {
+                        if (data.dataAvail() < MIN_KEY_DESCRIPTOR_BYTES) return@runCatching null
+                    val keyDescriptor = data.readTypedObject(KeyDescriptor.CREATOR) ?: return@runCatching null
+                    val publicCert = data.createByteArray()
+                    val certificateChain = data.createByteArray()
+                    var key = SecurityLevelInterceptor.resolveKey(callingUid, keyDescriptor)
+                    if (key == null && keyDescriptor.nspace != 0L) {
+                        val grant = SecurityLevelInterceptor.grants[keyDescriptor.nspace]
+                        if (grant != null && grant.granteeUid == callingUid) {
+                            if (grant.accessVector and KeyPermission.UPDATE == 0)
+                                return@runCatching errorReply(ResponseCode.PERMISSION_DENIED, "UPDATE permission not granted")
+                            if (SecurityLevelInterceptor.keys.containsKey(grant.key)) key = grant.key
+                        }
+                    }
+                    if (key != null && SecurityLevelInterceptor.keys.containsKey(key)) {
                             SecurityLevelInterceptor.updateKeyCertChain(key, publicCert, certificateChain)
                             Logger.i("updateSubcomponent: updated TSOSS cert chain for uid=$callingUid alias=${key.alias}")
                             return@runCatching successReply()
@@ -142,14 +155,15 @@ if (code == deleteKeyTransaction) {
             return kotlin
                 .runCatching {
                     data.enforceInterface(IKeystoreService.DESCRIPTOR)
-                    if (data.dataAvail() < 16) return@runCatching Skip
+                    if (data.dataAvail() < MIN_KEY_DESCRIPTOR_BYTES) return@runCatching Skip
                     val keyDescriptor = data.readTypedObject(KeyDescriptor.CREATOR) ?: return@runCatching Skip
                     val granteeUid = data.readInt()
-                    data.readInt()
+                    val accessVector = data.readInt() // KeyPermission bitmap (GET_INFO=4, USE=256, …)
                     val key = SecurityLevelInterceptor.resolveKey(callingUid, keyDescriptor)
                     if (key != null && SecurityLevelInterceptor.keys.containsKey(key)) {
                         val grantId = java.security.SecureRandom().nextLong()
-                        SecurityLevelInterceptor.grants[grantId] = SecurityLevelInterceptor.GrantInfo(callingUid, granteeUid, key)
+                        SecurityLevelInterceptor.grants[grantId] =
+                            SecurityLevelInterceptor.GrantInfo(callingUid, granteeUid, key, accessVector)
                         val grantDescriptor = KeyDescriptor()
                         grantDescriptor.domain = domainGrant
                         grantDescriptor.nspace = grantId
@@ -169,13 +183,14 @@ if (code == deleteKeyTransaction) {
             return kotlin
                 .runCatching {
                     data.enforceInterface(IKeystoreService.DESCRIPTOR)
-                    if (data.dataAvail() < 16) return@runCatching Skip
+                    if (data.dataAvail() < MIN_KEY_DESCRIPTOR_BYTES) return@runCatching Skip
                     val keyDescriptor = data.readTypedObject(KeyDescriptor.CREATOR) ?: return@runCatching Skip
                     val granteeUid = data.readInt()
-                    val grant = SecurityLevelInterceptor.grants[keyDescriptor.nspace]
-                    if (grant != null && grant.granteeUid == granteeUid) {
-                        SecurityLevelInterceptor.grants.remove(keyDescriptor.nspace)
-                        Logger.d("ungrant: removed TSOSS grant grantId=${keyDescriptor.nspace}")
+                    val key = SecurityLevelInterceptor.resolveKey(callingUid, keyDescriptor)
+                    if (key != null && SecurityLevelInterceptor.keys.containsKey(key)) {
+                        val removed = SecurityLevelInterceptor.grants.entries
+                            .removeIf { (_, g) -> g.key == key && g.granteeUid == granteeUid }
+                        Logger.d("ungrant: ${if (removed) "removed" else "no"} TSOSS grant for uid=$callingUid alias=${key.alias} granteeUid=$granteeUid")
                         return@runCatching successReply()
                     }
                     Skip
@@ -189,12 +204,30 @@ if (code == deleteKeyTransaction) {
                 .runCatching {
                     Logger.d("intercept pre  $target uid=$callingUid pid=$callingPid dataSz=${data.dataSize()}")
                     data.enforceInterface(IKeystoreService.DESCRIPTOR)
-                    if (data.dataAvail() < 16) {
+                    if (data.dataAvail() < MIN_KEY_DESCRIPTOR_BYTES) {
                         Logger.w("getKeyEntry: parcel too small (${data.dataAvail()}B), forwarding")
                         return@runCatching Skip
                     }
                     val descriptor = data.readTypedObject(KeyDescriptor.CREATOR) ?: return@runCatching Skip
                     val aliasLabel = descriptor.alias ?: "<nspace=${descriptor.nspace}>"
+                    if (descriptor.nspace != 0L) {
+                        val grant = SecurityLevelInterceptor.grants[descriptor.nspace]
+                        if (grant != null && grant.granteeUid == callingUid) {
+                            if (grant.accessVector and KeyPermission.GET_INFO == 0) {
+                                Logger.i(
+                                    "Grant getKeyEntry denied: grantee uid=$callingUid lacks GET_INFO for grantId=${descriptor.nspace} accessVector=${grant.accessVector}"
+                                )
+                                return@runCatching errorReply(ResponseCode.PERMISSION_DENIED, "GET_INFO permission not granted")
+                            }
+                            val response = SecurityLevelInterceptor.keys[grant.key]?.response
+                            if (response != null) {
+                                Logger.i(
+                                    "Serving TSOSS grant key for grantee uid=$callingUid grantId=${descriptor.nspace} ownerUid=${grant.ownerUid} alias=${grant.key.alias}"
+                                )
+                                return@runCatching safeTypedObjectReply(response, "grant")
+                            }
+                        }
+                    }
                     when {
                         PkgConfig.needGenerate(callingUid) -> {
                             val response = SecurityLevelInterceptor.findGeneratedKey(callingUid, descriptor)?.response
