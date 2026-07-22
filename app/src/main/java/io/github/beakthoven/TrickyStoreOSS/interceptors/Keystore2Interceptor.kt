@@ -35,6 +35,7 @@ object Keystore2Interceptor : BaseKeystoreInterceptor() {
 
     private val getKeyEntryTransaction = transactCode("getKeyEntry")
     private val deleteKeyTransaction = transactCode("deleteKey")
+    private val updateSubcomponentTransaction = transactCode("updateSubcomponent")
     private val listEntriesTransaction = transactCode("listEntries")
     private val listEntriesBatchedTransaction = transactCode("listEntriesBatched")
     private val grantTransaction = transactCode("grant")
@@ -102,6 +103,38 @@ if (code == deleteKeyTransaction) {
                     }
                 }
             }.onFailure { Logger.e("deleteKey pre-hook parse failed", it) }
+            return Continue
+        }
+
+        if (code == updateSubcomponentTransaction) {
+            val result =
+                kotlin
+                    .runCatching {
+                        data.enforceInterface(IKeystoreService.DESCRIPTOR)
+                        if (data.dataAvail() < 16) return@runCatching null
+                        val keyDescriptor = data.readTypedObject(KeyDescriptor.CREATOR) ?: return@runCatching null
+                        val publicCert = data.createByteArray()
+                        val certificateChain = data.createByteArray()
+                        val key = SecurityLevelInterceptor.resolveKey(callingUid, keyDescriptor)
+                        if (key != null && SecurityLevelInterceptor.keys.containsKey(key)) {
+                            SecurityLevelInterceptor.updateKeyCertChain(key, publicCert, certificateChain)
+                            Logger.i("updateSubcomponent: updated TSOSS cert chain for uid=$callingUid alias=${key.alias}")
+                            return@runCatching successReply()
+                        }
+                        if (key != null) {
+                            SecurityLevelInterceptor.patchedResponses.remove(key)
+                            SecurityLevelInterceptor.skipLeafHacks.remove(key)
+                            Logger.i(
+                                "Invalidated cached response for uid=$callingUid alias=${key.alias} after updateSubcomponent"
+                            )
+                        } else {
+                            Logger.i("updateSubcomponent: could not resolve alias for nspace=${keyDescriptor.nspace}")
+                        }
+                        null
+                    }
+                    .onFailure { Logger.e("updateSubcomponent pre-hook parse failed", it) }
+                    .getOrNull()
+            if (result != null) return result
             return Continue
         }
 
@@ -289,6 +322,28 @@ if (code == deleteKeyTransaction) {
                     }
                 }
                 .onFailure { Logger.e("deleteKey cleanup failed", it) }
+            return Skip
+        }
+
+        if (code == updateSubcomponentTransaction && resultCode == 0) {
+            kotlin
+                .runCatching {
+                    data.enforceInterface(IKeystoreService.DESCRIPTOR)
+                    val keyDescriptor = data.readTypedObject(KeyDescriptor.CREATOR)
+                    if (keyDescriptor != null) {
+                        val alias =
+                            keyDescriptor.alias
+                                ?: SecurityLevelInterceptor.keysByNspace[keyDescriptor.nspace]?.takeIf { it.uid == callingUid }
+                                    ?.alias
+                        if (alias != null) {
+                            val k = SecurityLevelInterceptor.Key(callingUid, alias)
+                            SecurityLevelInterceptor.patchedResponses.remove(k)
+                            SecurityLevelInterceptor.skipLeafHacks.remove(k)
+                            Logger.i("Invalidated cached response for uid=$callingUid alias=$alias after updateSubcomponent")
+                        }
+                    }
+                }
+                .onFailure { Logger.e("updateSubcomponent cleanup failed", it) }
             return Skip
         }
 

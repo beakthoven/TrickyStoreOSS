@@ -133,6 +133,15 @@ class SecurityLevelInterceptor(private val original: IKeystoreSecurityLevel, pri
             return descriptor.alias?.let { Key(uid, it) }
         }
 
+        @Keep
+        fun updateKeyCertChain(key: Key, publicCert: ByteArray?, certificateChain: ByteArray?) {
+            val info = keys[key] ?: return
+            info.response.metadata.certificate = publicCert
+            info.response.metadata.certificateChain = certificateChain
+            patchedResponses.remove(key)
+            skipLeafHacks.remove(key)
+        }
+
         @Keep val usageRemaining = ConcurrentHashMap<Key, Int>()
 
         @Keep
