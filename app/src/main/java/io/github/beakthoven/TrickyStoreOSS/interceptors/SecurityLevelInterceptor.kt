@@ -135,10 +135,14 @@ class SecurityLevelInterceptor(private val original: IKeystoreSecurityLevel, pri
 
         @Keep
         fun updateKeyCertChain(key: Key, publicCert: ByteArray?, certificateChain: ByteArray?) {
-            val info = keys[key] ?: return
-            info.response.metadata.certificate = publicCert
-            info.response.metadata.certificateChain = certificateChain
-            patchedResponses.remove(key)
+            keys[key]?.let {
+                it.response.metadata.certificate = publicCert
+                it.response.metadata.certificateChain = certificateChain
+            }
+            patchedResponses[key]?.metadata?.let {
+                it.certificate = publicCert
+                it.certificateChain = certificateChain
+            }
             skipLeafHacks.remove(key)
         }
 

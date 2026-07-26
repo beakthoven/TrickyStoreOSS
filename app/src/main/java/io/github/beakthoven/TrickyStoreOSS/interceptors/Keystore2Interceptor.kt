@@ -126,10 +126,12 @@ object Keystore2Interceptor : BaseKeystoreInterceptor() {
                         if (grant != null && grant.granteeUid == callingUid) {
                             if (grant.accessVector and KeyPermission.UPDATE == 0)
                                 return@runCatching errorReply(ResponseCode.PERMISSION_DENIED, "UPDATE permission not granted")
-                            if (SecurityLevelInterceptor.keys.containsKey(grant.key)) key = grant.key
+                            if (SecurityLevelInterceptor.keys.containsKey(grant.key) ||
+                                SecurityLevelInterceptor.patchedResponses.containsKey(grant.key)) key = grant.key
                         }
                     }
-                    if (key != null && SecurityLevelInterceptor.keys.containsKey(key)) {
+                    if (key != null && (SecurityLevelInterceptor.keys.containsKey(key) ||
+                            SecurityLevelInterceptor.patchedResponses.containsKey(key))) {
                             SecurityLevelInterceptor.updateKeyCertChain(key, publicCert, certificateChain)
                             Logger.i("updateSubcomponent: updated TSOSS cert chain for uid=$callingUid alias=${key.alias}")
                             return@runCatching successReply()
@@ -160,7 +162,8 @@ object Keystore2Interceptor : BaseKeystoreInterceptor() {
                     val granteeUid = data.readInt()
                     val accessVector = data.readInt() // KeyPermission bitmap (GET_INFO=4, USE=256, …)
                     val key = SecurityLevelInterceptor.resolveKey(callingUid, keyDescriptor)
-                    if (key != null && SecurityLevelInterceptor.keys.containsKey(key)) {
+                    if (key != null && (SecurityLevelInterceptor.keys.containsKey(key) ||
+                            SecurityLevelInterceptor.patchedResponses.containsKey(key))) {
                         val grantId = java.security.SecureRandom().nextLong()
                         SecurityLevelInterceptor.grants[grantId] =
                             SecurityLevelInterceptor.GrantInfo(callingUid, granteeUid, key, accessVector)
@@ -187,7 +190,8 @@ object Keystore2Interceptor : BaseKeystoreInterceptor() {
                     val keyDescriptor = data.readTypedObject(KeyDescriptor.CREATOR) ?: return@runCatching Skip
                     val granteeUid = data.readInt()
                     val key = SecurityLevelInterceptor.resolveKey(callingUid, keyDescriptor)
-                    if (key != null && SecurityLevelInterceptor.keys.containsKey(key)) {
+                    if (key != null && (SecurityLevelInterceptor.keys.containsKey(key) ||
+                            SecurityLevelInterceptor.patchedResponses.containsKey(key))) {
                         val removed = SecurityLevelInterceptor.grants.entries
                             .removeIf { (_, g) -> g.key == key && g.granteeUid == granteeUid }
                         Logger.d("ungrant: ${if (removed) "removed" else "no"} TSOSS grant for uid=$callingUid alias=${key.alias} granteeUid=$granteeUid")
@@ -220,6 +224,7 @@ object Keystore2Interceptor : BaseKeystoreInterceptor() {
                                 return@runCatching errorReply(ResponseCode.PERMISSION_DENIED, "GET_INFO permission not granted")
                             }
                             val response = SecurityLevelInterceptor.keys[grant.key]?.response
+                                ?: SecurityLevelInterceptor.patchedResponses[grant.key]
                             if (response != null) {
                                 Logger.i(
                                     "Serving TSOSS grant key for grantee uid=$callingUid grantId=${descriptor.nspace} ownerUid=${grant.ownerUid} alias=${grant.key.alias}"
@@ -389,11 +394,16 @@ object Keystore2Interceptor : BaseKeystoreInterceptor() {
                 data.enforceInterface("android.system.keystore2.IKeystoreService")
                 val response = reply.readTypedObject(KeyEntryResponse.CREATOR)
                 if (response != null) {
+                    val cachedKey = response.metadata?.key?.nspace?.takeIf { it != 0L }
+                        ?.let { SecurityLevelInterceptor.keysByNspace[it] }
+                    val cached = cachedKey?.let { SecurityLevelInterceptor.patchedResponses[it] }
+                    if (cached != null) return createTypedObjectReply(cached)
                     val chain = CertificateUtils.run { response.getCertificateChain() }
                     if (chain != null) {
                         val newChain = CertificateHack.hackCertificateChain(chain)
                         response.putCertificateChain(newChain).getOrThrow()
                         response.metadata?.authorizations = CertificateHack.patchAuthorizations(response.metadata?.authorizations)
+                        if (cachedKey != null) SecurityLevelInterceptor.patchedResponses[cachedKey] = response
                         Logger.d("Hacked certificate for uid=$callingUid")
                         return createTypedObjectReply(response)
                     } else {
