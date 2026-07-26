@@ -83,7 +83,9 @@ object CertificateHack {
         val leafHolder = X509CertificateHolder(leaf.encoded)
         val extension = leafHolder.getExtension(ATTESTATION_OID) ?: return certificateChain
         val encodables = ASN1Sequence.getInstance(extension.extnValue.octets).toArray()
-        val teeEnforced = encodables[7] as ASN1Sequence
+        // Some Android 11 Keymasters emit softwareEnforced/teeEnforced swapped.
+        val teeIndex = if (containsRootOfTrust(encodables[6])) 6 else 7
+        val teeEnforced = encodables[teeIndex] as ASN1Sequence
 
         var rootOfTrust: ASN1Encodable? = null
         val vector = ASN1EncodableVector()
@@ -108,7 +110,7 @@ object CertificateHack {
                 leafHolder.subject,
                 leafHolder.subjectPublicKeyInfo,
             )
-        builder.addExtension(hackAttestExtension(rootOfTrust, vector, encodables))
+        builder.addExtension(hackAttestExtension(rootOfTrust, vector, encodables, teeIndex))
         leafHolder.extensions.extensionOIDs.forEach { oid ->
             if (oid.id != ATTESTATION_OID.id) builder.addExtension(leafHolder.getExtension(oid))
         }
@@ -176,6 +178,7 @@ object CertificateHack {
         originalRootOfTrust: ASN1Encodable?,
         vector: ASN1EncodableVector,
         originalEncodables: Array<ASN1Encodable>,
+        teeIndex: Int,
     ): Extension {
         val verifiedBootKey = AndroidUtils.bootKey
         var verifiedBootHash: ByteArray? = null
@@ -215,10 +218,15 @@ object CertificateHack {
         rebuilt.forEach { rebuiltVector.add(it) }
 
         val hackEnforced = DERSequence(rebuiltVector)
-        originalEncodables[7] = hackEnforced
+        originalEncodables[teeIndex] = hackEnforced
         val hackedSequence = DERSequence(originalEncodables)
         val hackedSequenceOctets = DEROctetString(hackedSequence)
 
         return Extension(ATTESTATION_OID, false, hackedSequenceOctets)
+    }
+
+    private fun containsRootOfTrust(list: ASN1Encodable): Boolean {
+        if (list !is ASN1Sequence) return false
+        return list.toArray().any { it is ASN1TaggedObject && it.tagNo == 704 }
     }
 }
