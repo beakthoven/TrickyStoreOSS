@@ -41,6 +41,13 @@ private const val MAX_ATTESTATION_CHALLENGE_BYTES = 128
 private const val KM_ERROR_INVALID_INPUT_LENGTH = -21
 
 class SecurityLevelInterceptor(private val original: IKeystoreSecurityLevel, private val level: Int) : BinderInterceptor() {
+    override val interceptedCodes: IntArray by lazy {
+        intArrayOf(
+            generateKeyTransaction,
+            createOperationTransaction,
+            importKeyTransaction,
+        ).filter { it >= 0 }.toIntArray()
+    }
     companion object {
         private val generateKeyTransaction = getTransactCode(IKeystoreSecurityLevel.Stub::class.java, "generateKey")
         private val createOperationTransaction = getTransactCode(IKeystoreSecurityLevel.Stub::class.java, "createOperation")

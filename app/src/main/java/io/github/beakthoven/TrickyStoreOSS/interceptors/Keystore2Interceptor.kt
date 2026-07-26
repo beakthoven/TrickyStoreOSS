@@ -50,6 +50,18 @@ object Keystore2Interceptor : BaseKeystoreInterceptor() {
             1
         }
 
+    override val interceptedCodes: IntArray by lazy {
+        intArrayOf(
+            getKeyEntryTransaction,
+            deleteKeyTransaction,
+            updateSubcomponentTransaction,
+            listEntriesTransaction,
+            listEntriesBatchedTransaction,
+            grantTransaction,
+            ungrantTransaction,
+        ).filter { it >= 0 }.toIntArray()
+    }
+
     private const val MIN_KEY_DESCRIPTOR_BYTES = 28
     override val serviceName = "android.system.keystore2.IKeystoreService/default"
     override val processName = "keystore2"

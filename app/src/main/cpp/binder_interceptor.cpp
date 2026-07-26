@@ -10,6 +10,7 @@
 #include <sys/ioctl.h>
 #include <utils/StrongPointer.h>
 
+#include <algorithm>
 #include <map>
 #include <memory>
 #include <queue>
@@ -45,6 +46,7 @@ class BinderInterceptor : public BBinder {
     struct InterceptorRegistration {
         wp<IBinder> target_binder{};
         sp<IBinder> interceptor_binder;
+        std::vector<uint32_t> codes;
 
         InterceptorRegistration() = default;
         InterceptorRegistration(wp<IBinder> target, sp<IBinder> interceptor)
@@ -63,7 +65,7 @@ public:
     bool handleInterceptedTransaction(sp<BBinder> target_binder, uint32_t transaction_code, const Parcel &request_data,
                                       Parcel *reply_data, uint32_t transaction_flags, status_t &result);
 
-    bool shouldInterceptBinder(const wp<BBinder> &target_binder) const;
+    bool shouldInterceptTransaction(const wp<BBinder> &target_binder, uint32_t code) const;
 
 private:
     status_t handleRegisterInterceptor(const android::Parcel &data);
@@ -147,7 +149,7 @@ bool processBinderTransaction(binder_transaction_data *transaction_data) {
             auto *target_binder = reinterpret_cast<BBinder *>(transaction_data->cookie);
             auto weak_binder = wp<BBinder>::fromExisting(target_binder);
 
-            if (g_binder_interceptor->shouldInterceptBinder(weak_binder)) {
+            if (g_binder_interceptor->shouldInterceptTransaction(weak_binder, transaction_data->code)) {
                 transaction_info.transaction_code = transaction_data->code;
                 transaction_info.target_binder = weak_binder;
                 should_intercept = true;
@@ -238,9 +240,12 @@ int intercepted_ioctl_function(int fd, int request, ...) {
     return result;
 }
 
-bool BinderInterceptor::shouldInterceptBinder(const wp<BBinder> &target_binder) const {
+bool BinderInterceptor::shouldInterceptTransaction(const wp<BBinder> &target_binder, uint32_t code) const {
     ReadGuard guard{interceptor_registry_lock_};
-    return interceptor_registry_.find(target_binder) != interceptor_registry_.end();
+    auto it = interceptor_registry_.find(target_binder);
+    if (it == interceptor_registry_.end()) return false;
+    const auto &codes = it->second.codes;
+    return codes.empty() || std::find(codes.begin(), codes.end(), code) != codes.end();
 }
 
 status_t BinderInterceptor::onTransact(uint32_t code, const android::Parcel &data, android::Parcel *reply, uint32_t flags) {
@@ -272,6 +277,23 @@ status_t BinderInterceptor::handleRegisterInterceptor(const android::Parcel &dat
         return BAD_VALUE;
     }
 
+    int32_t count = 0;
+    if (data.readInt32(&count) != OK) {
+        LOGE("Failed to read transaction-code allow-list count");
+        return BAD_VALUE;
+    }
+    if (count < 0) count = 0;
+    std::vector<uint32_t> codes;
+    codes.reserve(static_cast<size_t>(count));
+    for (int32_t i = 0; i < count; ++i) {
+        uint32_t c = 0;
+        if (data.readUint32(&c) != OK) {
+            LOGE("Failed to read transaction code #%d from registration data", i);
+            return BAD_VALUE;
+        }
+        codes.push_back(c);
+    }
+
     {
         WriteGuard write_guard{interceptor_registry_lock_};
         wp<IBinder> weak_target = target_binder;
@@ -283,8 +305,9 @@ status_t BinderInterceptor::handleRegisterInterceptor(const android::Parcel &dat
         } else {
             iterator->second.interceptor_binder = interceptor_binder;
         }
+        iterator->second.codes = std::move(codes);
 
-        LOGI("Registered interceptor for binder %p", target_binder.get());
+        LOGI("Registered interceptor for binder %p (%zu codes)", target_binder.get(), iterator->second.codes.size());
         return OK;
     }
 }

@@ -12,6 +12,9 @@ import io.github.beakthoven.TrickyStoreOSS.logging.Logger
 
 open class BinderInterceptor : Binder() {
 
+    /** Transaction codes to forward to Java hooks; empty intercepts all. */
+    open val interceptedCodes: IntArray get() = IntArray(0)
+
     sealed class Result
 
     data object Skip : Result()
@@ -64,6 +67,7 @@ open class BinderInterceptor : Binder() {
             try {
                 data.writeStrongBinder(target)
                 data.writeStrongBinder(interceptor)
+                data.writeIntArray(interceptor.interceptedCodes)
                 backdoor.transact(REGISTER_INTERCEPTOR_CODE, data, reply, 0)
                 Logger.d("Registered interceptor for target: $target")
             } catch (e: Exception) {

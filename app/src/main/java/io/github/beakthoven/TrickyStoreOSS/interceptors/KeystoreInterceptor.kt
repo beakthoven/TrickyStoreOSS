@@ -42,6 +42,16 @@ object KeystoreInterceptor : BaseKeystoreInterceptor() {
     private val exportKeyTransaction = getTransactCode(IKeystoreService.Stub::class.java, "exportKey")
     private val attestKeyTransaction = getTransactCode(IKeystoreService.Stub::class.java, "attestKey")
 
+    override val interceptedCodes: IntArray by lazy {
+        intArrayOf(
+            getTransaction,
+            generateKeyTransaction,
+            getKeyCharacteristicsTransaction,
+            exportKeyTransaction,
+            attestKeyTransaction,
+        ).filter { it >= 0 }.toIntArray()
+    }
+
     override val serviceName = "android.security.keystore"
     override val processName = "keystore"
     override val injectionCommand = "exec ./inject `pidof keystore` libTrickyStoreOSS.so entry"
