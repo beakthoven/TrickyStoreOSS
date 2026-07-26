@@ -19,7 +19,7 @@ import org.bouncycastle.asn1.DEROctetString
 import org.bouncycastle.asn1.DERSequence
 import java.io.File
 import java.security.MessageDigest
-import java.util.concurrent.ThreadLocalRandom
+import java.security.SecureRandom
 
 object AndroidUtils {
 
@@ -109,9 +109,7 @@ object AndroidUtils {
         }
     }
 
-    private fun randomBytes(): ByteArray = ByteArray(32).also { 
-        ThreadLocalRandom.current().nextBytes(it) 
-    }
+    private fun randomBytes(): ByteArray = ByteArray(32).also { SecureRandom().nextBytes(it) }
 
     val patchLevel: Int
         get() = getCustomPatchLevel("system", false) 
