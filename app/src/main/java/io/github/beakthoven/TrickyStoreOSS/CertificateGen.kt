@@ -12,9 +12,10 @@ import android.hardware.security.keymint.KeyParameter
 import android.hardware.security.keymint.KeyPurpose
 import android.hardware.security.keymint.Tag
 import android.os.Build
+import android.os.ServiceSpecificException
+import android.security.keymaster.KeymasterDefs
 import android.security.keystore.KeyProperties
 import android.system.keystore2.KeyDescriptor
-import android.security.keymaster.KeymasterDefs
 import io.github.beakthoven.TrickyStoreOSS.config.PkgConfig
 import io.github.beakthoven.TrickyStoreOSS.interceptors.SecurityLevelInterceptor
 import android.util.Log
@@ -228,9 +229,18 @@ object CertificateGen {
         return KeyBoxUtils.keyboxes[name] ?: KeyBoxUtils.keyboxes.values.firstOrNull()
     }
 
-    private fun getAttestationKeyInfo(uid: Int, descriptor: KeyDescriptor): Pair<KeyPair, X500Name>? {
-        val alias = descriptor.alias ?: return null
-        val keyInfo = SecurityLevelInterceptor.getKeyPairs(uid, alias) ?: return null
+    private fun getAttestationKeyInfo(uid: Int, descriptor: KeyDescriptor): Pair<KeyPair, X500Name> {
+        val alias = descriptor.alias
+            ?: SecurityLevelInterceptor.findAliasForNspace(uid, descriptor.nspace)
+            ?: throw ServiceSpecificException(
+                KeymasterDefs.KM_ERROR_INVALID_ARGUMENT,
+                "Designated attest key not resolvable (nspace=${descriptor.nspace}) for uid $uid",
+            )
+        val keyInfo = SecurityLevelInterceptor.getKeyPairs(uid, alias)
+            ?: throw ServiceSpecificException(
+                KeymasterDefs.KM_ERROR_INVALID_ARGUMENT,
+                "Designated attest key not found for uid $uid alias=$alias",
+            )
         return keyInfo.first to X509CertificateHolder(keyInfo.second[0].encoded).subject
     }
 

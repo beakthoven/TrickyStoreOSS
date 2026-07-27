@@ -76,6 +76,12 @@ class SecurityLevelInterceptor(private val original: IKeystoreSecurityLevel, pri
         }
 
         @Keep
+        fun findAliasForNspace(uid: Int, nspace: Long): String? {
+            val key = keysByNspace[nspace]?.takeIf { it.uid == uid } ?: return null
+            return key.alias
+        }
+
+        @Keep
         fun findGeneratedKey(uid: Int, descriptor: KeyDescriptor): Info? {
             if (descriptor.nspace != 0L) {
                 findGeneratedKeyByKeyId(uid, descriptor.nspace)?.let {
