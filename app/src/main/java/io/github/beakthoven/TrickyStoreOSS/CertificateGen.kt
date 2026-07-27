@@ -64,6 +64,7 @@ object CertificateGen {
         var digest: MutableList<Int> = mutableListOf(),
         var padding: MutableList<Int> = mutableListOf(),
         var blockMode: MutableList<Int> = mutableListOf(),
+        var mgfDigest: MutableList<Int> = mutableListOf(),
         var usageCountLimit: Int = 0,
         var callerNonce: Boolean? = null,
         var activeDateTime: Long? = null,
@@ -100,6 +101,7 @@ object CertificateGen {
                             Tag.DIGEST -> digest.add(v.digest)
                             Tag.PADDING -> padding.add(v.paddingMode)
                             Tag.BLOCK_MODE -> blockMode.add(v.blockMode)
+                            Tag.RSA_OAEP_MGF_DIGEST -> mgfDigest.add(v.digest)
                             Tag.USAGE_COUNT_LIMIT -> usageCountLimit = v.integer
                             Tag.MAX_USES_PER_BOOT -> if (usageCountLimit == 0) usageCountLimit = v.integer
                             Tag.CALLER_NONCE -> callerNonce = v.boolValue

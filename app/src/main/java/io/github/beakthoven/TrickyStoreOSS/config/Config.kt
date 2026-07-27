@@ -13,6 +13,7 @@ import android.os.IInterface
 import android.os.ServiceManager
 import io.github.beakthoven.TrickyStoreOSS.AttestUtils.TEEStatus
 import io.github.beakthoven.TrickyStoreOSS.KeyBoxUtils
+import io.github.beakthoven.TrickyStoreOSS.interceptors.SecurityLevelInterceptor
 import io.github.beakthoven.TrickyStoreOSS.logging.Logger
 import java.io.File
 
@@ -57,6 +58,7 @@ object PkgConfig {
 
     private fun updateKeyBox(f: File?) = runCatching {
         KeyBoxUtils.readFromXml(f?.readText())
+        SecurityLevelInterceptor.cleanupAll()
     }.onFailure {
         Logger.e("failed to update keybox", it)
     }
