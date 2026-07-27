@@ -5,11 +5,10 @@
 
 package io.github.beakthoven.TrickyStoreOSS
 
-import android.content.pm.IPackageManager
-import android.content.pm.PackageManager
 import android.os.Build
-import android.os.ServiceManager
 import android.os.SystemProperties
+import android.security.KeyStore2
+import android.security.keystore.KeyStoreManager
 import io.github.beakthoven.TrickyStoreOSS.AttestUtils.CachedAttestData
 import io.github.beakthoven.TrickyStoreOSS.config.CustomPatchLevel
 import io.github.beakthoven.TrickyStoreOSS.config.PkgConfig
@@ -17,9 +16,6 @@ import io.github.beakthoven.TrickyStoreOSS.logging.Logger
 import java.io.File
 import java.security.MessageDigest
 import java.security.SecureRandom
-import org.bouncycastle.asn1.ASN1Integer
-import org.bouncycastle.asn1.DEROctetString
-import org.bouncycastle.asn1.DERSequence
 
 object AndroidUtils {
 
@@ -214,37 +210,16 @@ object AndroidUtils {
             .onFailure { Logger.e("Invalid patch level format: $this", it) }
             .getOrDefault(202404)
 
-    val apexInfos: List<Pair<String, Long>> by lazy {
-        runCatching {
-                val packageManager = IPackageManager.Stub.asInterface(ServiceManager.getService("package"))
-                val packages =
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                        packageManager.getInstalledPackages(PackageManager.MATCH_APEX.toLong(), 0)
-                    } else {
-                        @Suppress("DEPRECATION") packageManager.getInstalledPackages(PackageManager.MATCH_APEX, 0)
-                    }
+    private val keystore2: KeyStore2 by lazy { KeyStore2.getInstance() }
 
-                packages.list.map { it.packageName to it.longVersionCode }.sortedBy { it.first }
-            }
-            .getOrElse {
-                Logger.e("Failed to get APEX package information")
-                emptyList()
-            }
-    }
+    fun getSupplementaryAttestationInfo(tag: Int): ByteArray? =
+        runCatching { keystore2.getSupplementaryAttestationInfo(tag) }.getOrNull()
 
     val moduleHash: ByteArray by lazy {
-        runCatching {
-                val encodables = apexInfos.flatMap { (packageName, versionCode) ->
-                    listOf(DEROctetString(packageName.toByteArray()), ASN1Integer(versionCode))
-                }
-
-                val sequence = DERSequence(encodables.toTypedArray())
-                MessageDigest.getInstance("SHA-256").digest(sequence.encoded)
-            }
-            .getOrElse {
-                Logger.e("Failed to compute module hash", it)
-                ByteArray(32)
-            }
+        getSupplementaryAttestationInfo(KeyStoreManager.MODULE_HASH)
+            ?.let { MessageDigest.getInstance("SHA-256").digest(it) }
+            ?: CachedAttestData?.moduleHash
+            ?: ByteArray(32).also { Logger.e("Failed to source module hash") }
     }
 }
 

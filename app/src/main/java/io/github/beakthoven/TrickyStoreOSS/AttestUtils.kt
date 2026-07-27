@@ -31,6 +31,7 @@ object AttestUtils {
         val attestVersion: Int?,
         val keymasterVersion: Int?,
         val osVersion: Int?,
+        val moduleHash: ByteArray?,
     )
 
     val TEEStatus: Boolean by lazy { isTEEWorking() }
@@ -110,29 +111,38 @@ object AttestUtils {
             val keyDescriptionSeq = ASN1Sequence.getInstance(ext.extnValue.octets)
             val encodables = keyDescriptionSeq.toArray()
 
-            val attestVersion = ASN1Integer.getInstance(encodables[0]).value.intValueExact()
-            val keymasterVersion = ASN1Integer.getInstance(encodables[2]).value.intValueExact()
-            var attestVerifiedBootKey: ByteArray? = null
-            var attestVerifiedBootHash: ByteArray? = null
-            var attestOSVersion: Int? = null
+        val attestVersion = ASN1Integer.getInstance(encodables[0]).value.intValueExact()
+        val keymasterVersion = ASN1Integer.getInstance(encodables[2]).value.intValueExact()
+        var attestVerifiedBootKey: ByteArray? = null
+        var attestVerifiedBootHash: ByteArray? = null
+        var attestOSVersion: Int? = null
+        var attestModuleHash: ByteArray? = null
 
-            val teeEnforced = ASN1Sequence.getInstance(encodables[7])
+        val teeEnforced = ASN1Sequence.getInstance(encodables[7])
 
-            teeEnforced.forEach { element ->
-                val tagged = element as ASN1TaggedObject
-                when (tagged.tagNo) {
-                    704 -> { // Parse Root of Trust
-                        val rootOfTrustSeq = ASN1Sequence.getInstance(tagged.baseObject.toASN1Primitive())
-                        if (rootOfTrustSeq.size() >= 4) {
-                            attestVerifiedBootKey = ASN1OctetString.getInstance(rootOfTrustSeq.getObjectAt(0)).octets
-                            attestVerifiedBootHash = ASN1OctetString.getInstance(rootOfTrustSeq.getObjectAt(3)).octets
-                        }
-                    }
-                    705 -> { // Parse OS Version
-                        attestOSVersion = ASN1Integer.getInstance(tagged.baseObject.toASN1Primitive()).value.intValueExact()
+        teeEnforced.forEach { element ->
+            val tagged = element as ASN1TaggedObject
+            when (tagged.tagNo) {
+                704 -> { // Parse Root of Trust
+                    val rootOfTrustSeq = ASN1Sequence.getInstance(tagged.baseObject.toASN1Primitive())
+                    if (rootOfTrustSeq.size() >= 4) {
+                        attestVerifiedBootKey = ASN1OctetString.getInstance(rootOfTrustSeq.getObjectAt(0)).octets
+                        attestVerifiedBootHash = ASN1OctetString.getInstance(rootOfTrustSeq.getObjectAt(3)).octets
                     }
                 }
+                705 -> { // Parse OS Version
+                    attestOSVersion = ASN1Integer.getInstance(tagged.baseObject.toASN1Primitive()).value.intValueExact()
+                }
             }
+        }
+
+        val softwareEnforced = encodables.getOrNull(6) as? ASN1Sequence
+        softwareEnforced?.forEach { element ->
+            val tagged = element as? ASN1TaggedObject ?: return@forEach
+            if (tagged.tagNo == 724) {
+                attestModuleHash = ASN1OctetString.getInstance(tagged.baseObject.toASN1Primitive()).octets
+            }
+        }
 
             Logger.i("Extracted attestationVersion: $attestVersion")
             Logger.i("Extracted keymasterVersion: $keymasterVersion")
@@ -146,6 +156,7 @@ object AttestUtils {
                 attestVersion = attestVersion,
                 keymasterVersion = keymasterVersion,
                 osVersion = attestOSVersion,
+                moduleHash = attestModuleHash,
             )
         } catch (e: Exception) {
             Logger.e("Failed to parse attestation data", e)
