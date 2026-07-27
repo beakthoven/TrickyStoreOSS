@@ -439,10 +439,6 @@ bool inject_library(int pid, const char *lib_path, const char *entry_name) {
 } // namespace inject
 
 int main(int argc, char **argv) {
-#ifndef NDEBUG
-    logging::setPrintEnabled(true);
-#endif
-
     if (argc < 4) {
         fprintf(stderr, "Usage: %s <pid> <lib_path> <entry_name>\n", argv[0]);
         fprintf(stderr, "  pid       - Target process ID\n");

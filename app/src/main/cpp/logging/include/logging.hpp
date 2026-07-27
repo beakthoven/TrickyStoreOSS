@@ -26,8 +26,6 @@
 #define PLOGE(fmt, args...) LOGE(fmt " failed with %d: %s", ##args, errno, strerror(errno))
 
 namespace logging {
-void setPrintEnabled(bool print);
-
 [[gnu::format(printf, 3, 4)]]
 void log(int prio, const char *tag, const char *fmt, ...);
 } // namespace logging
