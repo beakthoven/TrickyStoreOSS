@@ -279,7 +279,17 @@ object Keystore2Interceptor : BaseKeystoreInterceptor() {
                                 }
                             }
                         }
-                        else -> Skip
+                        else -> {
+                            // generateKey forged these for non-target UIDs too — serve them back or the framework gets KEY_NOT_FOUND
+                            val forged = SecurityLevelInterceptor.findGeneratedKey(callingUid, descriptor)?.response
+                                ?: SecurityLevelInterceptor.resolvePatchedResponse(callingUid, descriptor)
+                            if (forged != null) {
+                                Log.d(TAG, "Serving forged response for non-target uid=$callingUid alias=$aliasLabel")
+                                safeTypedObjectReply(forged, "generated")
+                            } else {
+                                Skip
+                            }
+                        }
                     }
                 }
                 .onFailure { Log.e(TAG, "getKeyEntry pre-hook failed uid=$callingUid", it) }
