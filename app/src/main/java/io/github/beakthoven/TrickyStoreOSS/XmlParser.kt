@@ -145,7 +145,7 @@ object KeyBoxUtils {
         }
 
         try {
-            val xmlParser = XmlParser(xmlData.sanitizeXml())
+            val xmlParser = XmlParser(xmlData.trim())
 
             val numberOfKeyboxes =
                 xmlParser.obtainPath("AndroidAttestation.NumberOfKeyboxes").getOrThrow()["text"]?.toIntOrNull()
@@ -157,19 +157,6 @@ object KeyBoxUtils {
         } catch (t: Throwable) {
             Logger.e("Error loading XML file (keyboxes cleared)", t)
         }
-    }
-
-    private fun String.sanitizeXml(): String {
-        var content = this
-
-        val boms = listOf("\uFEFF", "\uFFFE", "\u0000\uFEFF")
-        content = content.trimStart()
-        for (bom in boms) {
-            content = content.removePrefix(bom)
-        }
-        content = content.trimStart()
-
-        return content.trimEnd()
     }
 
     private fun processKeybox(xmlParser: XmlParser, index: Int) {
