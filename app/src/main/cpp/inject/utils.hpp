@@ -49,7 +49,6 @@ ssize_t read_proc(int pid, uintptr_t remote_addr, void *buf, size_t len);
 bool get_regs(int pid, struct user_regs_struct &regs);
 bool set_regs(int pid, struct user_regs_struct &regs);
 
-std::string get_addr_mem_region(const std::vector<lsplt::MapInfo> &map_info, uintptr_t addr);
 void *find_module_base(const std::vector<lsplt::MapInfo> &map_info, std::string_view module_suffix);
 void *find_func_addr(const std::vector<lsplt::MapInfo> &local_map_info, const std::vector<lsplt::MapInfo> &remote_map_info,
                      std::string_view module_name, std::string_view function_name);
@@ -62,12 +61,9 @@ uintptr_t remote_call(int pid, struct user_regs_struct &regs, uintptr_t func_add
 bool remote_pre_call(int pid, struct user_regs_struct &regs, uintptr_t func_addr, uintptr_t return_addr, std::vector<uintptr_t> &args);
 uintptr_t remote_post_call(int pid, struct user_regs_struct &regs, uintptr_t expected_return_addr);
 
-int fork_dont_care();
 bool wait_for_trace(int pid, int *status, int flags);
 std::string parse_status(int status);
-std::string get_program(int pid);
 void *find_module_return_addr(const std::vector<lsplt::MapInfo> &map_info, std::string_view module_suffix);
-bool switch_mnt_ns(int pid, int *fd);
 std::vector<std::string> get_cmdline(int pid);
 std::string parse_exec(int pid);
 bool skip_syscall(int pid);

@@ -12,7 +12,6 @@ import android.system.keystore2.Authorization
 import io.github.beakthoven.TrickyStoreOSS.logging.Logger
 import java.io.ByteArrayInputStream
 import java.security.cert.Certificate
-import java.security.cert.CertificateFactory
 import java.security.cert.X509Certificate
 import java.util.LinkedList
 import java.util.concurrent.ConcurrentHashMap
@@ -33,15 +32,6 @@ import org.bouncycastle.cert.jcajce.JcaX509CertificateConverter
 import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder
 
 object CertificateHack {
-    private val certificateFactory: CertificateFactory by lazy {
-        try {
-            CertificateFactory.getInstance("X.509")
-        } catch (t: Throwable) {
-            Logger.e("Failed to initialize certificate factory", t)
-            throw RuntimeException("Cannot initialize certificate factory", t)
-        }
-    }
-
     data class KeyIdentifier(val alias: String, val uid: Int)
 
     val leafAlgorithms = ConcurrentHashMap<KeyIdentifier, String>()
@@ -79,7 +69,7 @@ object CertificateHack {
     }
 
     private fun hackLeaf(certificateChain: Array<Certificate>): Array<Certificate> {
-        val leaf = certificateFactory.generateCertificate(ByteArrayInputStream(certificateChain[0].encoded)) as X509Certificate
+        val leaf = CertificateUtils.certificateFactory.generateCertificate(ByteArrayInputStream(certificateChain[0].encoded)) as X509Certificate
         val leafHolder = X509CertificateHolder(leaf.encoded)
         val extension = leafHolder.getExtension(ATTESTATION_OID) ?: return certificateChain
         val encodables = ASN1Sequence.getInstance(extension.extnValue.octets).toArray()
@@ -163,7 +153,7 @@ object CertificateHack {
     fun hackUserCertificate(certificate: ByteArray?, alias: String, uid: Int): ByteArray {
         if (certificate == null) throw UnsupportedOperationException("Leaf certificate is null!")
         return try {
-            val leaf = certificateFactory.generateCertificate(ByteArrayInputStream(certificate)) as X509Certificate
+            val leaf = CertificateUtils.certificateFactory.generateCertificate(ByteArrayInputStream(certificate)) as X509Certificate
             if (leaf.getExtensionValue(ATTESTATION_OID.id) == null) return certificate
             leafAlgorithms[KeyIdentifier(alias, uid)] = leaf.publicKey.algorithm
             val hacked = hackLeaf(arrayOf(leaf))

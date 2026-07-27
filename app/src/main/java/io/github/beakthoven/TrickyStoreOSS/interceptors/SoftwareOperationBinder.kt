@@ -16,6 +16,7 @@ import android.security.keymaster.KeymasterDefs
 import android.system.keystore2.IKeystoreOperation
 import android.system.keystore2.ResponseCode
 import io.github.beakthoven.TrickyStoreOSS.CertificateGen.KeyGenParameters
+import io.github.beakthoven.TrickyStoreOSS.CertificateUtils
 import java.security.Key
 import java.security.KeyFactory
 import java.security.MessageDigest
@@ -277,7 +278,7 @@ private constructor(
                                 "Unsupported purpose for HMAC: $purpose",
                             )
                         MacEngine(
-                            Mac.getInstance("Hmac${digestJcaName(digest)}").apply {
+                            Mac.getInstance("Hmac${CertificateUtils.digestJcaName(digest)}").apply {
                                 init(
                                     info.secretKey
                                         ?: throw ServiceSpecificException(
@@ -335,16 +336,6 @@ private constructor(
             return SoftwareOperationBinder(engine, usageKey, p.usageCountLimit)
         }
 
-        private fun digestJcaName(digest: Int) =
-            when (digest) {
-                KeymasterDefs.KM_DIGEST_SHA1 -> "SHA1"
-                KeymasterDefs.KM_DIGEST_SHA_2_224 -> "SHA224"
-                KeymasterDefs.KM_DIGEST_SHA_2_256 -> "SHA256"
-                KeymasterDefs.KM_DIGEST_SHA_2_384 -> "SHA384"
-                KeymasterDefs.KM_DIGEST_SHA_2_512 -> "SHA512"
-                else -> "SHA256"
-            }
-
         private fun oaepDigestName(digest: Int) =
             when (digest) {
                 KeymasterDefs.KM_DIGEST_SHA1 -> "SHA-1"
@@ -376,9 +367,9 @@ private constructor(
                             "Unsupported signature algorithm",
                         )
                 }
-            val name = "${digestJcaName(digest)}with$keyAlgo"
+            val name = "${CertificateUtils.digestJcaName(digest)}with$keyAlgo"
             return if (algorithm == Algorithm.RSA && padding == KeymasterDefs.KM_PAD_RSA_PSS)
-                "${digestJcaName(digest)}withRSA/PSS"
+                "${CertificateUtils.digestJcaName(digest)}withRSA/PSS"
             else name
         }
 

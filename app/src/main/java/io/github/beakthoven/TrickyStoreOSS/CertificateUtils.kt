@@ -5,9 +5,10 @@
 
 package io.github.beakthoven.TrickyStoreOSS
 
+import android.security.keymaster.KeymasterDefs
 import android.system.keystore2.KeyEntryResponse
 import android.system.keystore2.KeyMetadata
-import android.util.Log
+import io.github.beakthoven.TrickyStoreOSS.logging.Logger
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.StringReader
@@ -24,22 +25,44 @@ import org.bouncycastle.openssl.PEMParser
 import org.bouncycastle.openssl.jcajce.JcaPEMKeyConverter
 import org.bouncycastle.util.io.pem.PemReader
 
+sealed class ParseResult<out T> {
+    data class Success<T>(val data: T) : ParseResult<T>()
+
+    data class Error(val message: String, val cause: Throwable? = null) : ParseResult<Nothing>()
+
+    fun getOrThrow(): T =
+        when (this) {
+            is Success -> data
+            is Error -> throw Exception(message, cause)
+        }
+}
+
 object CertificateUtils {
-    private const val TAG = "TrickyStoreOSS"
-
-    sealed class ParseResult<out T> {
-        data class Success<T>(val data: T) : ParseResult<T>()
-
-        data class Error(val message: String, val cause: Throwable? = null) : ParseResult<Nothing>()
+    val certificateFactory: CertificateFactory by lazy {
+        try {
+            CertificateFactory.getInstance("X.509")
+        } catch (t: Throwable) {
+            Logger.e("Failed to initialize certificate factory", t)
+            throw RuntimeException("Cannot initialize certificate factory", t)
+        }
     }
+
+    fun digestJcaName(digest: Int): String =
+        when (digest) {
+            KeymasterDefs.KM_DIGEST_SHA1 -> "SHA1"
+            KeymasterDefs.KM_DIGEST_SHA_2_224 -> "SHA224"
+            KeymasterDefs.KM_DIGEST_SHA_2_256 -> "SHA256"
+            KeymasterDefs.KM_DIGEST_SHA_2_384 -> "SHA384"
+            KeymasterDefs.KM_DIGEST_SHA_2_512 -> "SHA512"
+            else -> "SHA256"
+        }
 
     fun ByteArray?.toCertificate(): X509Certificate? {
         return this?.let { bytes ->
             try {
-                val certFactory = CertificateFactory.getInstance("X.509")
-                certFactory.generateCertificate(ByteArrayInputStream(bytes)) as? X509Certificate
+                certificateFactory.generateCertificate(ByteArrayInputStream(bytes)) as? X509Certificate
             } catch (e: CertificateException) {
-                Log.w(TAG, "Couldn't parse certificate in keystore", e)
+                Logger.w("Couldn't parse certificate in keystore", e)
                 null
             }
         }
@@ -49,10 +72,9 @@ object CertificateUtils {
     fun ByteArray?.toCertificates(): Collection<X509Certificate> {
         return this?.let { bytes ->
             try {
-                val certFactory = CertificateFactory.getInstance("X.509")
-                certFactory.generateCertificates(ByteArrayInputStream(bytes)) as Collection<X509Certificate>
+                certificateFactory.generateCertificates(ByteArrayInputStream(bytes)) as Collection<X509Certificate>
             } catch (e: CertificateException) {
-                Log.w(TAG, "Couldn't parse certificates in keystore", e)
+                Logger.w("Couldn't parse certificates in keystore", e)
                 emptyList()
             }
         } ?: emptyList()
@@ -65,12 +87,12 @@ object CertificateUtils {
                     outputStream.toByteArray()
                 }
             }
-            .onFailure { Log.w(TAG, "Failed to convert certificates to byte array", it) }
+            .onFailure { Logger.w("Failed to convert certificates to byte array", it) }
             .getOrNull()
 
     fun Collection<Certificate>.toByteArrayList(): List<ByteArray>? =
         runCatching { map { it.encoded } }
-            .onFailure { Log.w(TAG, "Failed to convert certificates to byte array list", it) }
+            .onFailure { Logger.w("Failed to convert certificates to byte array list", it) }
             .getOrNull()
 
     fun KeyEntryResponse?.getCertificateChain(): Array<Certificate>? {
@@ -110,8 +132,7 @@ object CertificateUtils {
         return try {
             PemReader(StringReader(certContent.trimLine())).use { reader ->
                 val pemObject = reader.readPemObject()
-                val certificate =
-                    CertificateFactory.getInstance("X.509").generateCertificate(ByteArrayInputStream(pemObject.content))
+                val certificate = certificateFactory.generateCertificate(ByteArrayInputStream(pemObject.content))
                 ParseResult.Success(certificate)
             }
         } catch (t: Throwable) {

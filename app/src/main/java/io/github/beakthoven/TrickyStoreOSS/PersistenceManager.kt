@@ -15,7 +15,6 @@ import java.io.File
 import java.security.KeyFactory
 import java.security.KeyPair
 import java.security.cert.Certificate
-import java.security.cert.CertificateFactory
 import java.security.spec.PKCS8EncodedKeySpec
 import java.security.spec.X509EncodedKeySpec
 import java.util.Base64
@@ -166,7 +165,7 @@ object PersistenceManager {
                                 secretKey = SecretKeySpec(raw, algo)
                             }
 
-                            val cf = CertificateFactory.getInstance("X.509")
+                            val cf = CertificateUtils.certificateFactory
                             val chainSize = ins.readInt()
                             val chain =
                                 (1..chainSize).map {

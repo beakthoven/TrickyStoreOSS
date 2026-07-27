@@ -83,7 +83,6 @@ android {
     }
     buildFeatures {
         prefab = true
-        viewBinding = false
     }
 }
 

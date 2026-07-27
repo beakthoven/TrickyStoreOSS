@@ -14,7 +14,6 @@ import java.security.Security
 import org.bouncycastle.jce.provider.BouncyCastleProvider
 
 private const val RETRY_DELAY_MS = 1000L
-private const val SERVICE_SLEEP_MS = 1000000L
 
 fun main(args: Array<String>) {
     Logger.i("Welcome to TrickyStoreOSS!")
@@ -57,7 +56,5 @@ private fun selectKeystoreInterceptor() =
 
 private fun maintainService() {
     Logger.i("Service started, entering maintenance mode")
-    while (true) {
-        Thread.sleep(SERVICE_SLEEP_MS)
-    }
+    Thread.currentThread().join()
 }

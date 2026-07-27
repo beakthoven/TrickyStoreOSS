@@ -19,13 +19,7 @@ import org.xmlpull.v1.XmlPullParserFactory
 
 class XmlParser(private val xmlContent: String) {
 
-    sealed class ParseResult {
-        data class Success(val attributes: Map<String, String>) : ParseResult()
-
-        data class Error(val message: String, val cause: Throwable? = null) : ParseResult()
-    }
-
-    fun obtainPath(path: String): ParseResult {
+    fun obtainPath(path: String): ParseResult<Map<String, String>> {
         return try {
             val factory = XmlPullParserFactory.newInstance()
             val parser = factory.newPullParser()
@@ -41,14 +35,6 @@ class XmlParser(private val xmlContent: String) {
             ParseResult.Error("IO error while parsing XML: ${e.message}", e)
         } catch (e: Exception) {
             ParseResult.Error("Unexpected error: ${e.message}", e)
-        }
-    }
-
-    @Throws(Exception::class)
-    fun obtainPathLegacy(path: String): Map<String, String> {
-        when (val result = obtainPath(path)) {
-            is ParseResult.Success -> return result.attributes
-            is ParseResult.Error -> throw result.cause ?: Exception(result.message)
         }
     }
 
@@ -170,15 +156,9 @@ object KeyBoxUtils {
         try {
             val xmlParser = XmlParser(xmlData.sanitizeXml())
 
-            val numberOfKeyboxesResult = xmlParser.obtainPath("AndroidAttestation.NumberOfKeyboxes")
             val numberOfKeyboxes =
-                when (numberOfKeyboxesResult) {
-                    is XmlParser.ParseResult.Success ->
-                        numberOfKeyboxesResult.attributes["text"]?.toIntOrNull()
-                            ?: throw IllegalArgumentException("Invalid number of keyboxes")
-                    is XmlParser.ParseResult.Error ->
-                        throw Exception(numberOfKeyboxesResult.message, numberOfKeyboxesResult.cause)
-                }
+                xmlParser.obtainPath("AndroidAttestation.NumberOfKeyboxes").getOrThrow()["text"]?.toIntOrNull()
+                    ?: throw IllegalArgumentException("Invalid number of keyboxes")
 
             repeat(numberOfKeyboxes) { i -> processKeybox(xmlParser, i) }
 
@@ -203,54 +183,29 @@ object KeyBoxUtils {
 
     private fun processKeybox(xmlParser: XmlParser, index: Int) {
         try {
-            val algorithmResult = xmlParser.obtainPath("AndroidAttestation.Keybox.Key[$index]")
             val keyboxAlgorithm =
-                when (algorithmResult) {
-                    is XmlParser.ParseResult.Success ->
-                        algorithmResult.attributes["algorithm"] ?: throw IllegalArgumentException("Missing algorithm attribute")
-                    is XmlParser.ParseResult.Error -> throw Exception(algorithmResult.message, algorithmResult.cause)
-                }
+                xmlParser.obtainPath("AndroidAttestation.Keybox.Key[$index]").getOrThrow()["algorithm"]
+                    ?: throw IllegalArgumentException("Missing algorithm attribute")
 
-            val privateKeyResult = xmlParser.obtainPath("AndroidAttestation.Keybox.Key[$index].PrivateKey")
             val privateKeyContent =
-                when (privateKeyResult) {
-                    is XmlParser.ParseResult.Success ->
-                        privateKeyResult.attributes["text"] ?: throw IllegalArgumentException("Missing private key text")
-                    is XmlParser.ParseResult.Error -> throw Exception(privateKeyResult.message, privateKeyResult.cause)
-                }
+                xmlParser.obtainPath("AndroidAttestation.Keybox.Key[$index].PrivateKey").getOrThrow()["text"]
+                    ?: throw IllegalArgumentException("Missing private key text")
 
-            val numberOfCertificatesResult =
-                xmlParser.obtainPath("AndroidAttestation.Keybox.Key[$index].CertificateChain.NumberOfCertificates")
             val numberOfCertificates =
-                when (numberOfCertificatesResult) {
-                    is XmlParser.ParseResult.Success ->
-                        numberOfCertificatesResult.attributes["text"]?.toIntOrNull()
-                            ?: throw IllegalArgumentException("Invalid number of certificates")
-                    is XmlParser.ParseResult.Error ->
-                        throw Exception(numberOfCertificatesResult.message, numberOfCertificatesResult.cause)
-                }
+                xmlParser.obtainPath("AndroidAttestation.Keybox.Key[$index].CertificateChain.NumberOfCertificates")
+                    .getOrThrow()["text"]?.toIntOrNull()
+                    ?: throw IllegalArgumentException("Invalid number of certificates")
 
             val certificateChain = mutableListOf<Certificate>()
             repeat(numberOfCertificates) { j ->
-                val certResult = xmlParser.obtainPath("AndroidAttestation.Keybox.Key[$index].CertificateChain.Certificate[$j]")
                 val certContent =
-                    when (certResult) {
-                        is XmlParser.ParseResult.Success ->
-                            certResult.attributes["text"] ?: throw IllegalArgumentException("Missing certificate text")
-                        is XmlParser.ParseResult.Error -> throw Exception(certResult.message, certResult.cause)
-                    }
+                    xmlParser.obtainPath("AndroidAttestation.Keybox.Key[$index].CertificateChain.Certificate[$j]")
+                        .getOrThrow()["text"] ?: throw IllegalArgumentException("Missing certificate text")
 
-                when (val certParseResult = CertificateUtils.parseCertificate(certContent)) {
-                    is CertificateUtils.ParseResult.Success -> certificateChain.add(certParseResult.data)
-                    is CertificateUtils.ParseResult.Error -> throw Exception(certParseResult.message, certParseResult.cause)
-                }
+                certificateChain.add(CertificateUtils.parseCertificate(certContent).getOrThrow())
             }
 
-            val pemKeyPair =
-                when (val keyParseResult = CertificateUtils.parseKeyPair(privateKeyContent)) {
-                    is CertificateUtils.ParseResult.Success -> keyParseResult.data
-                    is CertificateUtils.ParseResult.Error -> throw Exception(keyParseResult.message, keyParseResult.cause)
-                }
+            val pemKeyPair = CertificateUtils.parseKeyPair(privateKeyContent).getOrThrow()
 
             val keyPair = CertificateUtils.convertPemToKeyPair(pemKeyPair)
 

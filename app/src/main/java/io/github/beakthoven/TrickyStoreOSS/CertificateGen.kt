@@ -275,21 +275,11 @@ object CertificateGen {
                     )
             }
         val signer =
-            JcaContentSignerBuilder("${digestJcaName(params)}with$signerAlgorithm")
+            JcaContentSignerBuilder("${CertificateUtils.digestJcaName(params.digest.firstOrNull { it != 0 } ?: 0)}with$signerAlgorithm")
                 .setProvider(BouncyCastleProvider.PROVIDER_NAME)
                 .build(signingKeyPair.private)
         return JcaX509CertificateConverter().setProvider(BouncyCastleProvider.PROVIDER_NAME).getCertificate(builder.build(signer))
     }
-
-    private fun digestJcaName(params: KeyGenParameters): String =
-        when (params.digest.firstOrNull { it != 0 }) {
-            KeymasterDefs.KM_DIGEST_SHA1 -> "SHA1"
-            KeymasterDefs.KM_DIGEST_SHA_2_224 -> "SHA224"
-            KeymasterDefs.KM_DIGEST_SHA_2_256 -> "SHA256"
-            KeymasterDefs.KM_DIGEST_SHA_2_384 -> "SHA384"
-            KeymasterDefs.KM_DIGEST_SHA_2_512 -> "SHA512"
-            else -> "SHA256"
-        }
 
     private fun ecCurveName(curve: Int): String =
         when (curve) {

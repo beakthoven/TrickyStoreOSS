@@ -28,7 +28,6 @@ using namespace android;
 namespace {
 namespace intercept_constants {
 constexpr uint32_t kRegisterInterceptor = 1;
-constexpr uint32_t kUnregisterInterceptor = 2;
 
 constexpr uint32_t kPreTransact = 1;
 constexpr uint32_t kPostTransact = 2;
@@ -69,7 +68,6 @@ public:
 
 private:
     status_t handleRegisterInterceptor(const android::Parcel &data);
-    status_t handleUnregisterInterceptor(const android::Parcel &data);
 
     template <typename ParcelWriter>
     status_t writeInterceptorCallData(ParcelWriter &writer, sp<BBinder> target_binder, uint32_t transaction_code,
@@ -252,8 +250,6 @@ status_t BinderInterceptor::onTransact(uint32_t code, const android::Parcel &dat
     switch (code) {
     case intercept_constants::kRegisterInterceptor:
         return handleRegisterInterceptor(data);
-    case intercept_constants::kUnregisterInterceptor:
-        return handleUnregisterInterceptor(data);
     default:
         return UNKNOWN_TRANSACTION;
     }
@@ -309,44 +305,6 @@ status_t BinderInterceptor::handleRegisterInterceptor(const android::Parcel &dat
 
         LOGI("Registered interceptor for binder %p (%zu codes)", target_binder.get(), iterator->second.codes.size());
         return OK;
-    }
-}
-
-status_t BinderInterceptor::handleUnregisterInterceptor(const android::Parcel &data) {
-    sp<IBinder> target_binder, interceptor_binder;
-
-    if (data.readStrongBinder(&target_binder) != OK) {
-        LOGE("Failed to read target binder from unregistration data");
-        return BAD_VALUE;
-    }
-
-    if (!target_binder->localBinder()) {
-        LOGE("Target binder is not a local binder");
-        return BAD_VALUE;
-    }
-
-    if (data.readStrongBinder(&interceptor_binder) != OK) {
-        LOGE("Failed to read interceptor binder from unregistration data");
-        return BAD_VALUE;
-    }
-
-    {
-        WriteGuard write_guard{interceptor_registry_lock_};
-        wp<IBinder> weak_target = target_binder;
-
-        auto iterator = interceptor_registry_.find(weak_target);
-        if (iterator != interceptor_registry_.end()) {
-            if (iterator->second.interceptor_binder != interceptor_binder) {
-                LOGE("Interceptor mismatch during unregistration");
-                return BAD_VALUE;
-            }
-            interceptor_registry_.erase(iterator);
-            LOGI("Unregistered interceptor for binder %p", target_binder.get());
-            return OK;
-        }
-
-        LOGW("Attempted to unregister non-existent interceptor");
-        return BAD_VALUE;
     }
 }
 

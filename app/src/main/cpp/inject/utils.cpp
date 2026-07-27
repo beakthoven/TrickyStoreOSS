@@ -41,64 +41,8 @@ constexpr int kInvalidFd = -1;
 constexpr uintptr_t kStackAlignment = 0xf;
 constexpr int kMaxArguments = 8;
 
-constexpr char kReadPerm = 'r';
-constexpr char kWritePerm = 'w';
-constexpr char kExecPerm = 'x';
-constexpr char kNoPerm = '-';
-
 constexpr std::string_view kRandomChars = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
 } // namespace
-
-bool switch_mnt_ns(int pid, int *fd) {
-    if (pid == 0) {
-        if (!fd || *fd == kInvalidFd) {
-            LOGE("Invalid file descriptor for namespace switch");
-            return false;
-        }
-
-        UniqueFd nsfd(*fd);
-        *fd = kInvalidFd;
-
-        std::string path = "/proc/self/fd/" + std::to_string(nsfd);
-        if (setns(nsfd, CLONE_NEWNS) == -1) {
-            PLOGE("Failed to switch to namespace: %s", path.c_str());
-            return false;
-        }
-
-        LOGD("Successfully switched back to original namespace");
-        return true;
-    } else {
-        int old_nsfd = kInvalidFd;
-
-        if (fd) {
-            old_nsfd = open("/proc/self/ns/mnt", O_RDONLY | O_CLOEXEC);
-            if (old_nsfd == kInvalidFd) {
-                PLOGE("Failed to open current namespace");
-                return false;
-            }
-            *fd = old_nsfd;
-        }
-
-        std::string target_path = "/proc/" + std::to_string(pid) + "/ns/mnt";
-        UniqueFd target_nsfd = open(target_path.c_str(), O_RDONLY | O_CLOEXEC);
-        if (target_nsfd == kInvalidFd) {
-            PLOGE("Failed to open target namespace: %s", target_path.c_str());
-            if (fd)
-                *fd = kInvalidFd;
-            return false;
-        }
-
-        if (setns(target_nsfd, CLONE_NEWNS) == -1) {
-            PLOGE("Failed to switch to target namespace: %s", target_path.c_str());
-            if (fd)
-                *fd = kInvalidFd;
-            return false;
-        }
-
-        LOGD("Successfully switched to namespace for PID %d", pid);
-        return true;
-    }
-}
 
 ssize_t write_proc(int pid, uintptr_t remote_addr, const void *buf, size_t len, bool use_proc_mem) {
     if (!buf || len == 0) {
@@ -205,22 +149,6 @@ bool set_regs(int pid, struct user_regs_struct &regs) {
 
     LOGV("Successfully set registers for PID %d", pid);
     return true;
-}
-
-std::string get_addr_mem_region(const std::vector<lsplt::MapInfo> &map_info, uintptr_t addr) {
-    for (const auto &map : map_info) {
-        if (map.start <= addr && map.end > addr) {
-            std::string perms_str;
-            perms_str.reserve(4);
-
-            perms_str += (map.perms & PROT_READ) ? kReadPerm : kNoPerm;
-            perms_str += (map.perms & PROT_WRITE) ? kWritePerm : kNoPerm;
-            perms_str += (map.perms & PROT_EXEC) ? kExecPerm : kNoPerm;
-
-            return map.path + ' ' + perms_str;
-        }
-    }
-    return "<unknown>";
 }
 
 void *find_module_base(const std::vector<lsplt::MapInfo> &map_info, std::string_view module_suffix) {
@@ -529,29 +457,6 @@ uintptr_t remote_call(int pid, struct user_regs_struct &regs, uintptr_t func_add
     return remote_post_call(pid, regs, return_addr);
 }
 
-int fork_dont_care() {
-    int first_pid = fork();
-    if (first_pid < 0) {
-        PLOGE("Failed first fork for daemon process");
-        return first_pid;
-    }
-
-    if (first_pid == 0) {
-        int second_pid = fork();
-        if (second_pid < 0) {
-            PLOGE("Failed second fork for daemon process");
-            exit(EXIT_FAILURE);
-        } else if (second_pid > 0) {
-            exit(EXIT_SUCCESS);
-        }
-        return 0;
-    } else {
-        int status;
-        waitpid(first_pid, &status, __WALL);
-        return first_pid;
-    }
-}
-
 bool wait_for_trace(int pid, int *status, int flags) {
     if (!status) {
         LOGE("Null status pointer passed to wait_for_trace");
@@ -597,20 +502,6 @@ std::string parse_status(int status) {
     }
 
     return std::string(status_buf);
-}
-
-std::string get_program(int pid) {
-    std::string exe_path = "/proc/" + std::to_string(pid) + "/exe";
-    char resolved_path[kMaxPathLength + 1];
-
-    ssize_t link_size = readlink(exe_path.c_str(), resolved_path, kMaxPathLength);
-    if (link_size == -1) {
-        PLOGE("Failed to read executable path for PID %d", pid);
-        return "";
-    }
-
-    resolved_path[link_size] = '\0';
-    return std::string(resolved_path);
 }
 
 void *find_module_return_addr(const std::vector<lsplt::MapInfo> &map_info, std::string_view module_suffix) {

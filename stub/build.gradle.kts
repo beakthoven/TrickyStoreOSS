@@ -9,7 +9,7 @@ plugins {
 
 android {
     namespace = "io.github.beakthoven.stub"
-    compileSdk = 36
+    compileSdk = 37
     defaultConfig {
         minSdk = 29
     }

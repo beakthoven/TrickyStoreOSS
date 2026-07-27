@@ -225,4 +225,5 @@ object AndroidUtils {
 
 fun String.trimLine(): String = trim().split("\n").joinToString("\n") { it.trim() }
 
-fun ByteArray.toHex(): String = joinToString("") { "%02x".format(it) }
+@OptIn(ExperimentalStdlibApi::class)
+fun ByteArray.toHex(): String = toHexString(HexFormat.Default)

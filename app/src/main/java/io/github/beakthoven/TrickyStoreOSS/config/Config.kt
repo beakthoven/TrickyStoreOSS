@@ -152,17 +152,15 @@ object PkgConfig {
         return iPm
     }
 
-    fun needHack(callingUid: Int): Boolean =
+    private fun checkNeed(callingUid: Int, targetMode: Mode, autoPredicate: Boolean): Boolean =
         kotlin
             .runCatching {
                 val ps = getPm()?.getPackagesForUid(callingUid) ?: return false
                 if (teeBroken == null) loadTEEStatus(root)
                 for (pkg in ps) {
                     when (packageModes[pkg]) {
-                        Mode.LEAF_HACK -> return true
-                        Mode.AUTO -> {
-                            if (teeBroken == false) return true
-                        }
+                        targetMode -> return true
+                        Mode.AUTO -> if (autoPredicate) return true
                         else -> {}
                     }
                 }
@@ -171,24 +169,9 @@ object PkgConfig {
             .onFailure { Logger.e("failed to get packages", it) }
             .getOrNull() ?: false
 
-    fun needGenerate(callingUid: Int): Boolean =
-        kotlin
-            .runCatching {
-                val ps = getPm()?.getPackagesForUid(callingUid) ?: return false
-                if (teeBroken == null) loadTEEStatus(root)
-                for (pkg in ps) {
-                    when (packageModes[pkg]) {
-                        Mode.GENERATE -> return true
-                        Mode.AUTO -> {
-                            if (teeBroken == true) return true
-                        }
-                        else -> {}
-                    }
-                }
-                return false
-            }
-            .onFailure { Logger.e("failed to get packages", it) }
-            .getOrNull() ?: false
+    fun needHack(callingUid: Int): Boolean = checkNeed(callingUid, Mode.LEAF_HACK, teeBroken == false)
+
+    fun needGenerate(callingUid: Int): Boolean = checkNeed(callingUid, Mode.GENERATE, teeBroken == true)
 
     @Volatile var _customPatchLevel: CustomPatchLevel? = null
 
