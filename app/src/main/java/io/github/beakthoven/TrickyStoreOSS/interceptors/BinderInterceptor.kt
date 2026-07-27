@@ -21,8 +21,6 @@ open class BinderInterceptor : Binder() {
 
     data object Continue : Result()
 
-    data class OverrideData(val data: Parcel) : Result()
-
     data class OverrideReply(val code: Int = 0, val reply: Parcel) : Result()
 
     companion object {
@@ -36,7 +34,6 @@ open class BinderInterceptor : Binder() {
         private const val RESULT_SKIP = 1
         private const val RESULT_CONTINUE = 2
         private const val RESULT_OVERRIDE_REPLY = 3
-        private const val RESULT_OVERRIDE_DATA = 4
 
         fun getBinderBackdoor(binder: IBinder): IBinder? {
             val data = Parcel.obtain()
@@ -180,12 +177,6 @@ open class BinderInterceptor : Binder() {
                     reply.writeLong(result.reply.dataSize().toLong())
                     reply.appendFrom(result.reply, 0, result.reply.dataSize())
                     result.reply.recycle()
-                }
-                is OverrideData -> {
-                    reply.writeInt(RESULT_OVERRIDE_DATA)
-                    reply.writeLong(result.data.dataSize().toLong())
-                    reply.appendFrom(result.data, 0, result.data.dataSize())
-                    result.data.recycle()
                 }
             }
         } catch (e: Throwable) {
