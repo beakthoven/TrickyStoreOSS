@@ -31,6 +31,8 @@ object Keystore2Interceptor : BaseKeystoreInterceptor() {
     private val getKeyEntryTransaction = transactCode("getKeyEntry")
     private val deleteKeyTransaction = transactCode("deleteKey")
 
+    private const val MIN_KEY_DESCRIPTOR_BYTES = 28
+
     override val serviceName = "android.system.keystore2.IKeystoreService/default"
     override val processName = "keystore2"
     override val injectionCommand = "exec ./inject `pidof keystore2` libTrickyStoreOSS.so entry"
@@ -76,7 +78,7 @@ object Keystore2Interceptor : BaseKeystoreInterceptor() {
 if (code == deleteKeyTransaction) {
             kotlin.runCatching {
                 data.enforceInterface(IKeystoreService.DESCRIPTOR)
-                if (data.dataAvail() < 16) return@runCatching
+                if (data.dataAvail() < MIN_KEY_DESCRIPTOR_BYTES) return@runCatching
                 val keyDescriptor = data.readTypedObject(KeyDescriptor.CREATOR)
                 Logger.d("deleteKey pre-hook: uid=$callingUid alias=${keyDescriptor?.alias} domain=${keyDescriptor?.domain}")
                 if (keyDescriptor != null) {
@@ -94,7 +96,7 @@ if (code == deleteKeyTransaction) {
             return kotlin.runCatching {
                 Logger.d("intercept pre  $target uid=$callingUid pid=$callingPid dataSz=${data.dataSize()}")
                 data.enforceInterface(IKeystoreService.DESCRIPTOR)
-                if (data.dataAvail() < 16) {
+                if (data.dataAvail() < MIN_KEY_DESCRIPTOR_BYTES) {
                     Logger.w("getKeyEntry: parcel too small (${data.dataAvail()}B), forwarding")
                     return@runCatching Skip
                 }
