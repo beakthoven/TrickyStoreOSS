@@ -110,10 +110,18 @@ object PersistenceManager {
                     writeIntList(out, params.blockMode)
                     writeIntList(out, params.mgfDigest)
                     out.writeInt(params.usageCountLimit)
-                    writeNullableBoolean(out, params.callerNonce)
-                    writeNullableLong(out, params.activeDateTime)
-                    writeNullableLong(out, params.originationExpireDateTime)
-                    writeNullableLong(out, params.usageExpireDateTime)
+                    val callerNonce = params.callerNonce
+                    out.writeBoolean(callerNonce != null)
+                    if (callerNonce != null) out.writeBoolean(callerNonce)
+                    val activeDateTime = params.activeDateTime
+                    out.writeBoolean(activeDateTime != null)
+                    if (activeDateTime != null) out.writeLong(activeDateTime)
+                    val originationExpireDateTime = params.originationExpireDateTime
+                    out.writeBoolean(originationExpireDateTime != null)
+                    if (originationExpireDateTime != null) out.writeLong(originationExpireDateTime)
+                    val usageExpireDateTime = params.usageExpireDateTime
+                    out.writeBoolean(usageExpireDateTime != null)
+                    if (usageExpireDateTime != null) out.writeLong(usageExpireDateTime)
 
                     val rsaExp = params.rsaPublicExponent
                     out.writeBoolean(rsaExp != null)
@@ -187,10 +195,10 @@ object PersistenceManager {
                             val blockMode = readIntList(ins)
                             val mgfDigest = readIntList(ins)
                             val usageCountLimit = ins.readInt()
-                            val callerNonce = readNullableBoolean(ins)
-                            val activeDateTime = readNullableLong(ins)
-                            val originationExpireDateTime = readNullableLong(ins)
-                            val usageExpireDateTime = readNullableLong(ins)
+                            val callerNonce = if (ins.readBoolean()) ins.readBoolean() else null
+                            val activeDateTime = if (ins.readBoolean()) ins.readLong() else null
+                            val originationExpireDateTime = if (ins.readBoolean()) ins.readLong() else null
+                            val usageExpireDateTime = if (ins.readBoolean()) ins.readLong() else null
                             val rsaExp =
                                 if (ins.readBoolean()) {
                                     val b = ByteArray(ins.readInt()).also { ins.readFully(it) }
@@ -256,20 +264,4 @@ object PersistenceManager {
         val n = ins.readInt()
         return (1..n).map { ins.readInt() }
     }
-
-    private fun writeNullableBoolean(out: DataOutputStream, v: Boolean?) {
-        out.writeBoolean(v != null)
-        if (v != null) out.writeBoolean(v)
-    }
-
-    private fun readNullableBoolean(ins: DataInputStream): Boolean? =
-        if (ins.readBoolean()) ins.readBoolean() else null
-
-    private fun writeNullableLong(out: DataOutputStream, v: Long?) {
-        out.writeBoolean(v != null)
-        if (v != null) out.writeLong(v)
-    }
-
-    private fun readNullableLong(ins: DataInputStream): Long? =
-        if (ins.readBoolean()) ins.readLong() else null
 }
