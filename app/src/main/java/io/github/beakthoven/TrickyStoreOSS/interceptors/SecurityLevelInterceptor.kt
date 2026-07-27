@@ -8,6 +8,7 @@ package io.github.beakthoven.TrickyStoreOSS.interceptors
 import android.hardware.security.keymint.Algorithm
 import android.hardware.security.keymint.KeyParameter
 import android.hardware.security.keymint.KeyParameterValue
+import android.hardware.security.keymint.KeyPurpose
 import android.hardware.security.keymint.Tag
 import android.os.IBinder
 import android.os.Parcel
@@ -220,29 +221,36 @@ class SecurityLevelInterceptor(private val original: IKeystoreSecurityLevel, pri
                         Log.d(TAG, "KeyDescriptor has null alias (KEY_ID domain), passing through to real keystore")
                         return Skip
                     }
-                    if (PkgConfig.needGenerate(callingUid)) {
-                        val isSymmetric = kgp.algorithm == Algorithm.AES || kgp.algorithm == Algorithm.HMAC
-                        if (isSymmetric) {
-                            val secretKey = CertificateGen.generateSecretKey(kgp) ?: return@runCatching
-                            return storeGeneratedKey(callingUid, keyDescriptor, kgp, null, secretKey, null, false)
-                        }
-                        val pair =
-                            CertificateGen.generateKeyPair(callingUid, keyDescriptor, attestationKeyDescriptor, kgp, level)
-                                ?: return@runCatching
-                        return storeGeneratedKey(callingUid, keyDescriptor, kgp, pair.first, null, pair.second, false)
-                    } else if (PkgConfig.needHack(callingUid)) {
-                        if (kgp.purpose.contains(7) || attestationKeyDescriptor != null) {
+                    val hasDeviceIdAttestation = params.any {
+                        it.tag == Tag.ATTESTATION_ID_IMEI || it.tag == Tag.ATTESTATION_ID_MEID ||
+                            it.tag == Tag.ATTESTATION_ID_SERIAL || it.tag == Tag.ATTESTATION_ID_SECOND_IMEI ||
+                            it.tag == Tag.DEVICE_UNIQUE_ATTESTATION
+                    }
+                    // device-ID/attest-key/BYO must be forged — real TEE can't do them; non-target UIDs too, or keystore2 fails with -66
+                    val forceForge = PkgConfig.needGenerate(callingUid) || hasDeviceIdAttestation ||
+                        kgp.purpose.contains(KeyPurpose.ATTEST_KEY) || attestationKeyDescriptor != null
+                    when {
+                        forceForge -> {
+                            val isSymmetric = kgp.algorithm == Algorithm.AES || kgp.algorithm == Algorithm.HMAC
+                            if (isSymmetric) {
+                                val secretKey = CertificateGen.generateSecretKey(kgp) ?: return@runCatching
+                                return storeGeneratedKey(callingUid, keyDescriptor, kgp, null, secretKey, null, false)
+                            }
                             val pair =
                                 CertificateGen.generateKeyPair(callingUid, keyDescriptor, attestationKeyDescriptor, kgp, level)
                                     ?: return@runCatching
-                            return storeGeneratedKey(callingUid, keyDescriptor, kgp, pair.first, null, pair.second, true)
-                        } else {
+                            return storeGeneratedKey(
+                                callingUid, keyDescriptor, kgp, pair.first, null, pair.second, PkgConfig.needHack(callingUid)
+                            )
+                        }
+                        PkgConfig.needHack(callingUid) -> {
                             skipLeafHacks.remove(Key(callingUid, keyDescriptor.alias))
-                            Log.i(TAG, 
+                            Log.i(TAG,
                                 "Forwarding non-attestation key to real keystore (post-hook will patch): uid=$callingUid alias=${keyDescriptor.alias}"
                             )
                             return Continue
                         }
+                        else -> return Skip
                     }
                 }
                 .onFailure { Log.e(TAG, "parse key gen request", it) }
