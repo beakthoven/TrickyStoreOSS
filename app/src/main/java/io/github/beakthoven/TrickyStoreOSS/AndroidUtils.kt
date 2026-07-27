@@ -12,7 +12,8 @@ import android.security.keystore.KeyStoreManager
 import io.github.beakthoven.TrickyStoreOSS.AttestUtils.CachedAttestData
 import io.github.beakthoven.TrickyStoreOSS.config.CustomPatchLevel
 import io.github.beakthoven.TrickyStoreOSS.config.PkgConfig
-import io.github.beakthoven.TrickyStoreOSS.logging.Logger
+import android.util.Log
+import io.github.beakthoven.TrickyStoreOSS.logging.TAG
 import java.io.File
 import java.security.MessageDigest
 import java.security.SecureRandom
@@ -22,11 +23,11 @@ object AndroidUtils {
     const val DO_NOT_REPORT = -1
 
     val bootKey: ByteArray by lazy {
-        getBootKeyFromProp()?.also { Logger.d("Using boot key from ro.boot.vbmeta.public_key_digest: ${it.toHex()}") }
+        getBootKeyFromProp()?.also { Log.d(TAG, "Using boot key from ro.boot.vbmeta.public_key_digest: ${it.toHex()}") }
             ?: CachedAttestData?.verifiedBootKey?.takeIfNonZero()?.also {
-                Logger.d("Using boot key from cached TEE attestation: ${it.toHex()}")
+                Log.d(TAG, "Using boot key from cached TEE attestation: ${it.toHex()}")
             }
-            ?: persistedBootKey().also { Logger.d("Using persisted random boot key (no AVB key available): ${it.toHex()}") }
+            ?: persistedBootKey().also { Log.d(TAG, "Using persisted random boot key (no AVB key available): ${it.toHex()}") }
     }
 
     private fun ByteArray.takeIfNonZero(): ByteArray? = takeIf { isNotEmpty() && any { it != 0.toByte() } }
@@ -52,19 +53,19 @@ object AndroidUtils {
                 }
             }
             .getOrElse {
-                Logger.e("Failed to persist boot key, using ephemeral random", it)
+                Log.e(TAG, "Failed to persist boot key, using ephemeral random", it)
                 randomBytes()
             }
     }
 
     fun setupBootHash() {
-        getBootHashFromProp()?.also { Logger.d("Using boot hash from system property: ${it.toHex()}") }
+        getBootHashFromProp()?.also { Log.d(TAG, "Using boot hash from system property: ${it.toHex()}") }
             ?: getBootHashFromAttestation()?.also {
-                Logger.d("Using boot hash from attestation: ${it.toHex()}")
+                Log.d(TAG, "Using boot hash from attestation: ${it.toHex()}")
                 setBootHashProp(it)
             }
             ?: randomBytes().also {
-                Logger.d("Generating random boot hash: ${it.toHex()}")
+                Log.d(TAG, "Generating random boot hash: ${it.toHex()}")
                 setBootHashProp(it)
             }
     }
@@ -72,10 +73,10 @@ object AndroidUtils {
     @OptIn(ExperimentalStdlibApi::class)
     fun getBootHashFromProp(): ByteArray? {
         val digest = SystemProperties.get("ro.boot.vbmeta.digest", null) ?: return null
-        Logger.d("System property ro.boot.vbmeta.digest: $digest")
+        Log.d(TAG, "System property ro.boot.vbmeta.digest: $digest")
 
         if (digest.isBlank()) {
-            Logger.d("Property is blank")
+            Log.d(TAG, "Property is blank")
             return null
         }
 
@@ -86,7 +87,7 @@ object AndroidUtils {
         return try {
             CachedAttestData?.verifiedBootHash?.takeIfNonZero()
         } catch (e: Exception) {
-            Logger.e("Failed to get boot hash from attestation: ${e.message}")
+            Log.e(TAG, "Failed to get boot hash from attestation: ${e.message}")
             null
         }
     }
@@ -94,10 +95,10 @@ object AndroidUtils {
     private fun setBootHashProp(bytes: ByteArray) {
         val hex = bytes.toHex()
         try {
-            Logger.d("Setting ro.boot.vbmeta.digest to: $hex")
+            Log.d(TAG, "Setting ro.boot.vbmeta.digest to: $hex")
             SystemProperties.set("ro.boot.vbmeta.digest", hex)
         } catch (e: Exception) {
-            Logger.e("Exception setting vbmeta digest: ${e.message}")
+            Log.e(TAG, "Exception setting vbmeta digest: ${e.message}")
         }
     }
 
@@ -153,12 +154,12 @@ object AndroidUtils {
                     if (isLong) year * 10000 + month * 100 else year * 100 + month
                 }
                 else -> {
-                    Logger.e("Invalid patch level length for $component: $normalized")
+                    Log.e(TAG, "Invalid patch level length for $component: $normalized")
                     null
                 }
             }
         } catch (e: NumberFormatException) {
-            Logger.e("Patch level parse error for $component=$value", e)
+            Log.e(TAG, "Patch level parse error for $component=$value", e)
             null
         }
     }
@@ -207,7 +208,7 @@ object AndroidUtils {
                     else -> throw IllegalArgumentException("Invalid patch level format: $this")
                 }
             }
-            .onFailure { Logger.e("Invalid patch level format: $this", it) }
+            .onFailure { Log.e(TAG, "Invalid patch level format: $this", it) }
             .getOrDefault(202404)
 
     private val keystore2: KeyStore2 by lazy { KeyStore2.getInstance() }
@@ -219,7 +220,7 @@ object AndroidUtils {
         getSupplementaryAttestationInfo(KeyStoreManager.MODULE_HASH)
             ?.let { MessageDigest.getInstance("SHA-256").digest(it) }
             ?: CachedAttestData?.moduleHash
-            ?: ByteArray(32).also { Logger.e("Failed to source module hash") }
+            ?: ByteArray(32).also { Log.e(TAG, "Failed to source module hash") }
     }
 }
 

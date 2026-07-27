@@ -29,7 +29,8 @@ import io.github.beakthoven.TrickyStoreOSS.interceptors.InterceptorUtils.errorRe
 import io.github.beakthoven.TrickyStoreOSS.interceptors.InterceptorUtils.getTransactCode
 import io.github.beakthoven.TrickyStoreOSS.interceptors.InterceptorUtils.hasException
 import io.github.beakthoven.TrickyStoreOSS.interceptors.InterceptorUtils.typedReply
-import io.github.beakthoven.TrickyStoreOSS.logging.Logger
+import android.util.Log
+import io.github.beakthoven.TrickyStoreOSS.logging.TAG
 import io.github.beakthoven.TrickyStoreOSS.putCertificateChain
 import java.security.KeyPair
 import java.security.SecureRandom
@@ -198,7 +199,7 @@ class SecurityLevelInterceptor(private val original: IKeystoreSecurityLevel, pri
             return if (PkgConfig.needHack(callingUid) || PkgConfig.needGenerate(callingUid)) Continue else Skip
         }
         if (code == generateKeyTransaction) {
-            Logger.i("intercept key gen uid=$callingUid pid=$callingPid")
+            Log.i(TAG, "intercept key gen uid=$callingUid pid=$callingPid")
             kotlin
                 .runCatching {
                     data.enforceInterface(IKeystoreSecurityLevel.DESCRIPTOR)
@@ -210,13 +211,13 @@ class SecurityLevelInterceptor(private val original: IKeystoreSecurityLevel, pri
                     val kgp = CertificateGen.KeyGenParameters(params)
                     val challenge = kgp.attestationChallenge
                     if (challenge != null && challenge.size > MAX_ATTESTATION_CHALLENGE_BYTES) {
-                        Logger.i(
+                        Log.i(TAG, 
                             "Rejecting oversized attestation challenge (${challenge.size}B > $MAX_ATTESTATION_CHALLENGE_BYTES) uid=$callingUid alias=${keyDescriptor.alias}"
                         )
                         return errorReply(KM_ERROR_INVALID_INPUT_LENGTH, "Oversized attestation challenge")
                     }
                     if (keyDescriptor.alias == null) {
-                        Logger.d("KeyDescriptor has null alias (KEY_ID domain), passing through to real keystore")
+                        Log.d(TAG, "KeyDescriptor has null alias (KEY_ID domain), passing through to real keystore")
                         return Skip
                     }
                     if (PkgConfig.needGenerate(callingUid)) {
@@ -237,14 +238,14 @@ class SecurityLevelInterceptor(private val original: IKeystoreSecurityLevel, pri
                             return storeGeneratedKey(callingUid, keyDescriptor, kgp, pair.first, null, pair.second, true)
                         } else {
                             skipLeafHacks.remove(Key(callingUid, keyDescriptor.alias))
-                            Logger.i(
+                            Log.i(TAG, 
                                 "Forwarding non-attestation key to real keystore (post-hook will patch): uid=$callingUid alias=${keyDescriptor.alias}"
                             )
                             return Continue
                         }
                     }
                 }
-                .onFailure { Logger.e("parse key gen request", it) }
+                .onFailure { Log.e(TAG, "parse key gen request", it) }
         }
         if (code == createOperationTransaction) {
             val result =
@@ -258,12 +259,12 @@ class SecurityLevelInterceptor(private val original: IKeystoreSecurityLevel, pri
                         val opRequest = OpRequest.parse(opParams)
                         val errCode = authorizeOperation(info.params, opRequest)
                         if (errCode != null) {
-                            Logger.i(
+                            Log.i(TAG, 
                                 "createOperation rejected for uid=$callingUid alias=${descriptor.alias} nspace=${descriptor.nspace}: KM error $errCode"
                             )
                             return@runCatching errorReply(errCode, "Operation not authorized")
                         }
-                        Logger.d(
+                        Log.d(TAG, 
                             "createOperation: serving software operation for uid=$callingUid alias=${descriptor.alias} nspace=${descriptor.nspace}"
                         )
                         val op = SoftwareOperationBinder.create(info, opRequest, resolveKey(callingUid, descriptor))
@@ -274,7 +275,7 @@ class SecurityLevelInterceptor(private val original: IKeystoreSecurityLevel, pri
                             }
                         typedReply(response)
                     }
-                    .onFailure { Logger.e("handle createOperation request", it) }
+                    .onFailure { Log.e(TAG, "handle createOperation request", it) }
                     .getOrNull()
             if (result != null) return result
         }
@@ -316,10 +317,10 @@ class SecurityLevelInterceptor(private val original: IKeystoreSecurityLevel, pri
                         metadata.key?.nspace?.let { nspace ->
                             if (nspace != 0L) keysByNspace[nspace] = Key(callingUid, keyDescriptor.alias)
                         }
-                        Logger.i("Patched generateKey chain for uid=$callingUid alias=${keyDescriptor.alias}")
+                        Log.i(TAG, "Patched generateKey chain for uid=$callingUid alias=${keyDescriptor.alias}")
                         typedReply(metadata)
                     }
-                    .onFailure { Logger.e("patch generateKey reply", it) }
+                    .onFailure { Log.e(TAG, "patch generateKey reply", it) }
                     .getOrNull()
             if (result != null) return result
         }
@@ -328,10 +329,10 @@ class SecurityLevelInterceptor(private val original: IKeystoreSecurityLevel, pri
                 .runCatching {
                     data.enforceInterface(IKeystoreSecurityLevel.DESCRIPTOR)
                     val keyDescriptor = data.readTypedObject(KeyDescriptor.CREATOR) ?: return@runCatching
-                    Logger.i("importKey succeeded, clearing generated state for uid=$callingUid alias=${keyDescriptor.alias}")
+                    Log.i(TAG, "importKey succeeded, clearing generated state for uid=$callingUid alias=${keyDescriptor.alias}")
                     cleanupKey(callingUid, keyDescriptor.alias)
                 }
-                .onFailure { Logger.e("parse importKey request", it) }
+                .onFailure { Log.e(TAG, "parse importKey request", it) }
         }
         return Skip
     }
@@ -463,9 +464,9 @@ class SecurityLevelInterceptor(private val original: IKeystoreSecurityLevel, pri
                         if (pk.keyPair != null) keyPairs[key] = Pair(pk.keyPair, pk.chain)
                         if (pk.nspace != 0L) keysByNspace[pk.nspace] = key
                         if (pk.skipLeafHack) skipLeafHacks[key] = true
-                        Logger.i("Restored persisted key uid=${pk.uid} alias=${pk.alias}")
+                        Log.i(TAG, "Restored persisted key uid=${pk.uid} alias=${pk.alias}")
                     }
-                    .onFailure { Logger.e("Failed to restore persisted key uid=${pk.uid} alias=${pk.alias}", it) }
+                    .onFailure { Log.e(TAG, "Failed to restore persisted key uid=${pk.uid} alias=${pk.alias}", it) }
             }
     }
 

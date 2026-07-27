@@ -8,7 +8,8 @@ package io.github.beakthoven.TrickyStoreOSS.interceptors
 import android.os.Binder
 import android.os.IBinder
 import android.os.Parcel
-import io.github.beakthoven.TrickyStoreOSS.logging.Logger
+import android.util.Log
+import io.github.beakthoven.TrickyStoreOSS.logging.TAG
 
 open class BinderInterceptor : Binder() {
 
@@ -42,14 +43,14 @@ open class BinderInterceptor : Binder() {
             return try {
                 val success = binder.transact(BACKDOOR_TRANSACTION_CODE, data, reply, 0)
                 if (success) {
-                    Logger.d("Backdoor access granted for binder: $binder")
+                    Log.d(TAG, "Backdoor access granted for binder: $binder")
                     reply.readStrongBinder()
                 } else {
-                    Logger.d("Backdoor access denied for binder: $binder")
+                    Log.d(TAG, "Backdoor access denied for binder: $binder")
                     null
                 }
             } catch (e: Exception) {
-                Logger.e("Failed to access binder backdoor", e)
+                Log.e(TAG, "Failed to access binder backdoor", e)
                 null
             } finally {
                 data.recycle()
@@ -66,9 +67,9 @@ open class BinderInterceptor : Binder() {
                 data.writeStrongBinder(interceptor)
                 data.writeIntArray(interceptor.interceptedCodes)
                 backdoor.transact(REGISTER_INTERCEPTOR_CODE, data, reply, 0)
-                Logger.d("Registered interceptor for target: $target")
+                Log.d(TAG, "Registered interceptor for target: $target")
             } catch (e: Exception) {
-                Logger.e("Failed to register binder interceptor", e)
+                Log.e(TAG, "Failed to register binder interceptor", e)
             } finally {
                 data.recycle()
                 reply.recycle()
@@ -100,7 +101,7 @@ open class BinderInterceptor : Binder() {
             writeResultToReply(result, reply!!)
             true
         } catch (e: Throwable) {
-            Logger.e("onTransact uncaught exception", e)
+            Log.e(TAG, "onTransact uncaught exception", e)
             try {
                 reply?.setDataPosition(0)
                 reply?.setDataSize(0)
@@ -124,7 +125,7 @@ open class BinderInterceptor : Binder() {
             transactionData.setDataPosition(0)
             onPreTransact(target, transactionCode, transactionFlags, callingUid, callingPid, transactionData)
         } catch (e: Throwable) {
-            Logger.e("handlePreTransact exception code=$transactionCode uid=$callingUid", e)
+            Log.e(TAG, "handlePreTransact exception code=$transactionCode uid=$callingUid", e)
             Skip
         } finally {
             transactionData.recycle()
@@ -158,7 +159,7 @@ open class BinderInterceptor : Binder() {
 
             onPostTransact(target, transactionCode, transactionFlags, callingUid, callingPid, transactionData, reply, resultCode)
         } catch (e: Throwable) {
-            Logger.e("handlePostTransact exception code=$transactionCode uid=$callingUid", e)
+            Log.e(TAG, "handlePostTransact exception code=$transactionCode uid=$callingUid", e)
             Skip
         } finally {
             transactionData.recycle()
@@ -180,7 +181,7 @@ open class BinderInterceptor : Binder() {
                 }
             }
         } catch (e: Throwable) {
-            Logger.e("writeResultToReply exception", e)
+            Log.e(TAG, "writeResultToReply exception", e)
             try {
                 reply.setDataPosition(0)
                 reply.setDataSize(0)

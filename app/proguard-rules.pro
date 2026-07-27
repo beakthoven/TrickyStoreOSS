@@ -24,12 +24,6 @@
     public static void main(java.lang.String[]);
 }
 
--assumenosideeffects class io.github.beakthoven.TrickyStoreOSS.logging.Logger {
-    public static void d(java.lang.String);
-    public static void dd(java.lang.String);
-    public static void v(java.lang.String);
-}
-
 -assumenosideeffects class android.util.Log {
     public static int v(...);
     public static int d(...);

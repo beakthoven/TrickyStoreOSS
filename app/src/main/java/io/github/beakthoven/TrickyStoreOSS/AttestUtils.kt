@@ -8,7 +8,8 @@ package io.github.beakthoven.TrickyStoreOSS
 import android.os.Build
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
-import io.github.beakthoven.TrickyStoreOSS.logging.Logger
+import android.util.Log
+import io.github.beakthoven.TrickyStoreOSS.logging.TAG
 import java.security.KeyPairGenerator
 import java.security.KeyStore
 import java.security.SecureRandom
@@ -69,12 +70,12 @@ object AttestUtils {
             keyPairGenerator.initialize(parameterSpec)
             keyPairGenerator.generateKeyPair()
 
-            Logger.d("TEE check: successful")
+            Log.d(TAG, "TEE check: successful")
 
             // keyStore.deleteEntry(keygen_alias)
             true
         } catch (e: Exception) {
-            Logger.w("TEE check failure: ${e.message}")
+            Log.w(TAG, "TEE check failure: ${e.message}")
             false
         }
     }
@@ -104,7 +105,7 @@ object AttestUtils {
             val ext: Extension =
                 leafHolder.getExtension(ATTESTATION_OID)
                     ?: run {
-                        Logger.i("No attestation extension found on certificate")
+                        Log.i(TAG, "No attestation extension found on certificate")
                         return null
                     }
 
@@ -144,11 +145,11 @@ object AttestUtils {
             }
         }
 
-            Logger.i("Extracted attestationVersion: $attestVersion")
-            Logger.i("Extracted keymasterVersion: $keymasterVersion")
-            Logger.i("Extracted verifiedBootKey: ${attestVerifiedBootKey?.toHex() ?: 0}")
-            Logger.i("Extracted verifiedBootHash: ${attestVerifiedBootHash?.toHex() ?: 0}")
-            Logger.i("Extracted osVersion: $attestOSVersion")
+            Log.i(TAG, "Extracted attestationVersion: $attestVersion")
+            Log.i(TAG, "Extracted keymasterVersion: $keymasterVersion")
+            Log.i(TAG, "Extracted verifiedBootKey: ${attestVerifiedBootKey?.toHex() ?: 0}")
+            Log.i(TAG, "Extracted verifiedBootHash: ${attestVerifiedBootHash?.toHex() ?: 0}")
+            Log.i(TAG, "Extracted osVersion: $attestOSVersion")
 
             AttestationData(
                 verifiedBootKey = attestVerifiedBootKey,
@@ -159,7 +160,7 @@ object AttestUtils {
                 moduleHash = attestModuleHash,
             )
         } catch (e: Exception) {
-            Logger.e("Failed to parse attestation data", e)
+            Log.e(TAG, "Failed to parse attestation data", e)
             null
         }
     }

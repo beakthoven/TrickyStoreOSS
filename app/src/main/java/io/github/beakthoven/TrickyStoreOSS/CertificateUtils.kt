@@ -8,7 +8,8 @@ package io.github.beakthoven.TrickyStoreOSS
 import android.security.keymaster.KeymasterDefs
 import android.system.keystore2.KeyEntryResponse
 import android.system.keystore2.KeyMetadata
-import io.github.beakthoven.TrickyStoreOSS.logging.Logger
+import android.util.Log
+import io.github.beakthoven.TrickyStoreOSS.logging.TAG
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.StringReader
@@ -30,7 +31,7 @@ object CertificateUtils {
         try {
             CertificateFactory.getInstance("X.509")
         } catch (t: Throwable) {
-            Logger.e("Failed to initialize certificate factory", t)
+            Log.e(TAG, "Failed to initialize certificate factory", t)
             throw RuntimeException("Cannot initialize certificate factory", t)
         }
     }
@@ -52,7 +53,7 @@ object CertificateUtils {
             try {
                 certificateFactory.generateCertificate(ByteArrayInputStream(bytes)) as? X509Certificate
             } catch (e: CertificateException) {
-                Logger.w("Couldn't parse certificate in keystore", e)
+                Log.w(TAG, "Couldn't parse certificate in keystore", e)
                 null
             }
         }
@@ -64,7 +65,7 @@ object CertificateUtils {
             try {
                 certificateFactory.generateCertificates(ByteArrayInputStream(bytes)) as Collection<X509Certificate>
             } catch (e: CertificateException) {
-                Logger.w("Couldn't parse certificates in keystore", e)
+                Log.w(TAG, "Couldn't parse certificates in keystore", e)
                 emptyList()
             }
         } ?: emptyList()
@@ -77,7 +78,7 @@ object CertificateUtils {
                     outputStream.toByteArray()
                 }
             }
-            .onFailure { Logger.w("Failed to convert certificates to byte array", it) }
+            .onFailure { Log.w(TAG, "Failed to convert certificates to byte array", it) }
             .getOrNull()
 
     fun KeyEntryResponse?.getCertificateChain(): Array<Certificate>? {

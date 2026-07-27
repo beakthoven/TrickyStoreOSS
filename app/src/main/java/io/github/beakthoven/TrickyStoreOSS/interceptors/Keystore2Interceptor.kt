@@ -24,7 +24,8 @@ import io.github.beakthoven.TrickyStoreOSS.interceptors.InterceptorUtils.getTran
 import io.github.beakthoven.TrickyStoreOSS.interceptors.InterceptorUtils.hasException
 import io.github.beakthoven.TrickyStoreOSS.interceptors.InterceptorUtils.successReply
 import io.github.beakthoven.TrickyStoreOSS.interceptors.InterceptorUtils.typedReply
-import io.github.beakthoven.TrickyStoreOSS.logging.Logger
+import android.util.Log
+import io.github.beakthoven.TrickyStoreOSS.logging.TAG
 import io.github.beakthoven.TrickyStoreOSS.putCertificateChain
 
 @SuppressLint("BlockedPrivateApi")
@@ -76,22 +77,22 @@ object Keystore2Interceptor : BaseKeystoreInterceptor() {
 
         val tee = kotlin.runCatching { ks.getSecurityLevel(SecurityLevel.TRUSTED_ENVIRONMENT) }.getOrNull()
         if (tee != null) {
-            Logger.i("Registering for TEE SecurityLevel: $tee")
+            Log.i(TAG, "Registering for TEE SecurityLevel: $tee")
             val interceptor = SecurityLevelInterceptor(tee, SecurityLevel.TRUSTED_ENVIRONMENT)
             registerBinderInterceptor(backdoor, tee.asBinder(), interceptor)
             interceptor.loadPersistedKeys()
         } else {
-            Logger.i("No TEE SecurityLevel found")
+            Log.i(TAG, "No TEE SecurityLevel found")
         }
 
         val strongBox = kotlin.runCatching { ks.getSecurityLevel(SecurityLevel.STRONGBOX) }.getOrNull()
         if (strongBox != null) {
-            Logger.i("Registering for StrongBox SecurityLevel: $strongBox")
+            Log.i(TAG, "Registering for StrongBox SecurityLevel: $strongBox")
             val interceptor = SecurityLevelInterceptor(strongBox, SecurityLevel.STRONGBOX)
             registerBinderInterceptor(backdoor, strongBox.asBinder(), interceptor)
             interceptor.loadPersistedKeys()
         } else {
-            Logger.i("No StrongBox SecurityLevel found")
+            Log.i(TAG, "No StrongBox SecurityLevel found")
         }
     }
 
@@ -103,7 +104,7 @@ object Keystore2Interceptor : BaseKeystoreInterceptor() {
                         data.enforceInterface(IKeystoreService.DESCRIPTOR)
                         if (data.dataAvail() < MIN_KEY_DESCRIPTOR_BYTES) return@runCatching null
                         val keyDescriptor = data.readTypedObject(KeyDescriptor.CREATOR)
-                        Logger.d("deleteKey pre-hook: uid=$callingUid alias=${keyDescriptor?.alias} domain=${keyDescriptor?.domain}")
+                        Log.d(TAG, "deleteKey pre-hook: uid=$callingUid alias=${keyDescriptor?.alias} domain=${keyDescriptor?.domain}")
                         if (keyDescriptor != null) {
                             val alias = keyDescriptor.alias
                             if (alias != null) {
@@ -111,13 +112,13 @@ object Keystore2Interceptor : BaseKeystoreInterceptor() {
                                 val isSoftware = SecurityLevelInterceptor.keys.containsKey(key) &&
                                     !SecurityLevelInterceptor.skipLeafHacks.containsKey(key)
                                 SecurityLevelInterceptor.cleanupKey(callingUid, alias)
-                                Logger.d("deleteKey pre-hook: cleaned up uid=$callingUid alias=$alias")
+                                Log.d(TAG, "deleteKey pre-hook: cleaned up uid=$callingUid alias=$alias")
                                 if (isSoftware) return@runCatching successReply()
                             }
                         }
                         null
                     }
-                    .onFailure { Logger.e("deleteKey pre-hook parse failed", it) }
+                    .onFailure { Log.e(TAG, "deleteKey pre-hook parse failed", it) }
                     .getOrNull()
             if (result != null) return result
             return Continue
@@ -145,21 +146,21 @@ object Keystore2Interceptor : BaseKeystoreInterceptor() {
                     if (key != null && (SecurityLevelInterceptor.keys.containsKey(key) ||
                             SecurityLevelInterceptor.patchedResponses.containsKey(key))) {
                             SecurityLevelInterceptor.updateKeyCertChain(key, publicCert, certificateChain)
-                            Logger.i("updateSubcomponent: updated TSOSS cert chain for uid=$callingUid alias=${key.alias}")
+                            Log.i(TAG, "updateSubcomponent: updated TSOSS cert chain for uid=$callingUid alias=${key.alias}")
                             return@runCatching successReply()
                         }
                         if (key != null) {
                             SecurityLevelInterceptor.patchedResponses.remove(key)
                             SecurityLevelInterceptor.skipLeafHacks.remove(key)
-                            Logger.i(
+                            Log.i(TAG, 
                                 "Invalidated cached response for uid=$callingUid alias=${key.alias} after updateSubcomponent"
                             )
                         } else {
-                            Logger.i("updateSubcomponent: could not resolve alias for nspace=${keyDescriptor.nspace}")
+                            Log.i(TAG, "updateSubcomponent: could not resolve alias for nspace=${keyDescriptor.nspace}")
                         }
                         null
                     }
-                    .onFailure { Logger.e("updateSubcomponent pre-hook parse failed", it) }
+                    .onFailure { Log.e(TAG, "updateSubcomponent pre-hook parse failed", it) }
                     .getOrNull()
             if (result != null) return result
             return Continue
@@ -183,14 +184,14 @@ object Keystore2Interceptor : BaseKeystoreInterceptor() {
                         grantDescriptor.domain = domainGrant
                         grantDescriptor.nspace = grantId
                         grantDescriptor.alias = null
-                        Logger.i(
+                        Log.i(TAG, 
                             "grant: created TSOSS grant grantId=$grantId for uid=$callingUid alias=${key.alias} granteeUid=$granteeUid"
                         )
                         return@runCatching typedReply(grantDescriptor)
                     }
                     Skip
                 }
-                .onFailure { Logger.e("grant pre-hook failed uid=$callingUid", it) }
+                .onFailure { Log.e(TAG, "grant pre-hook failed uid=$callingUid", it) }
                 .getOrNull() ?: Skip
         }
 
@@ -206,22 +207,22 @@ object Keystore2Interceptor : BaseKeystoreInterceptor() {
                             SecurityLevelInterceptor.patchedResponses.containsKey(key))) {
                         val removed = SecurityLevelInterceptor.grants.entries
                             .removeIf { (_, g) -> g.key == key && g.granteeUid == granteeUid }
-                        Logger.d("ungrant: ${if (removed) "removed" else "no"} TSOSS grant for uid=$callingUid alias=${key.alias} granteeUid=$granteeUid")
+                        Log.d(TAG, "ungrant: ${if (removed) "removed" else "no"} TSOSS grant for uid=$callingUid alias=${key.alias} granteeUid=$granteeUid")
                         return@runCatching successReply()
                     }
                     Skip
                 }
-                .onFailure { Logger.e("ungrant pre-hook failed", it) }
+                .onFailure { Log.e(TAG, "ungrant pre-hook failed", it) }
                 .getOrNull() ?: Skip
         }
 
         if (code == getKeyEntryTransaction && KeyBoxUtils.hasKeyboxes()) {
             return kotlin
                 .runCatching {
-                    Logger.d("intercept pre  $target uid=$callingUid pid=$callingPid dataSz=${data.dataSize()}")
+                    Log.d(TAG, "intercept pre  $target uid=$callingUid pid=$callingPid dataSz=${data.dataSize()}")
                     data.enforceInterface(IKeystoreService.DESCRIPTOR)
                     if (data.dataAvail() < MIN_KEY_DESCRIPTOR_BYTES) {
-                        Logger.w("getKeyEntry: parcel too small (${data.dataAvail()}B), forwarding")
+                        Log.w(TAG, "getKeyEntry: parcel too small (${data.dataAvail()}B), forwarding")
                         return@runCatching Skip
                     }
                     val descriptor = data.readTypedObject(KeyDescriptor.CREATOR) ?: return@runCatching Skip
@@ -230,7 +231,7 @@ object Keystore2Interceptor : BaseKeystoreInterceptor() {
                         val grant = SecurityLevelInterceptor.grants[descriptor.nspace]
                         if (grant != null && grant.granteeUid == callingUid) {
                             if (grant.accessVector and KeyPermission.GET_INFO == 0) {
-                                Logger.i(
+                                Log.i(TAG, 
                                     "Grant getKeyEntry denied: grantee uid=$callingUid lacks GET_INFO for grantId=${descriptor.nspace} accessVector=${grant.accessVector}"
                                 )
                                 return@runCatching errorReply(ResponseCode.PERMISSION_DENIED, "GET_INFO permission not granted")
@@ -238,7 +239,7 @@ object Keystore2Interceptor : BaseKeystoreInterceptor() {
                             val response = SecurityLevelInterceptor.keys[grant.key]?.response
                                 ?: SecurityLevelInterceptor.patchedResponses[grant.key]
                             if (response != null) {
-                                Logger.i(
+                                Log.i(TAG, 
                                     "Serving TSOSS grant key for grantee uid=$callingUid grantId=${descriptor.nspace} ownerUid=${grant.ownerUid} alias=${grant.key.alias}"
                                 )
                                 return@runCatching safeTypedObjectReply(response, "grant")
@@ -249,31 +250,31 @@ object Keystore2Interceptor : BaseKeystoreInterceptor() {
                         PkgConfig.needGenerate(callingUid) -> {
                             val response = SecurityLevelInterceptor.findGeneratedKey(callingUid, descriptor)?.response
                             if (response != null) {
-                                Logger.d("Found generated response for uid=$callingUid alias=$aliasLabel")
+                                Log.d(TAG, "Found generated response for uid=$callingUid alias=$aliasLabel")
                                 safeTypedObjectReply(response, "generate")
                             } else {
-                                Logger.e("No generated response found for uid=$callingUid alias=$aliasLabel")
+                                Log.e(TAG, "No generated response found for uid=$callingUid alias=$aliasLabel")
                                 Skip
                             }
                         }
                         PkgConfig.needHack(callingUid) -> {
                             if (SecurityLevelInterceptor.shouldSkipLeafHackFor(callingUid, descriptor)) {
-                                Logger.i("skip leaf hack for uid=$callingUid alias=$aliasLabel")
+                                Log.i(TAG, "skip leaf hack for uid=$callingUid alias=$aliasLabel")
                                 val response = SecurityLevelInterceptor.findGeneratedKey(callingUid, descriptor)?.response
                                 if (response != null) {
-                                    Logger.d("Found generated response for uid=$callingUid alias=$aliasLabel")
+                                    Log.d(TAG, "Found generated response for uid=$callingUid alias=$aliasLabel")
                                     safeTypedObjectReply(response, "skipLeafHack")
                                 } else {
-                                    Logger.d("No generated response found for uid=$callingUid alias=$aliasLabel")
+                                    Log.d(TAG, "No generated response found for uid=$callingUid alias=$aliasLabel")
                                     Continue
                                 }
                             } else {
                                 val patched = SecurityLevelInterceptor.resolvePatchedResponse(callingUid, descriptor)
                                 if (patched != null) {
-                                    Logger.i("Serving cached patched response for uid=$callingUid alias=$aliasLabel")
+                                    Log.i(TAG, "Serving cached patched response for uid=$callingUid alias=$aliasLabel")
                                     safeTypedObjectReply(patched, "patched")
                                 } else {
-                                    Logger.d("proceeding with leaf hack for uid=$callingUid alias=$aliasLabel")
+                                    Log.d(TAG, "proceeding with leaf hack for uid=$callingUid alias=$aliasLabel")
                                     Continue
                                 }
                             }
@@ -281,7 +282,7 @@ object Keystore2Interceptor : BaseKeystoreInterceptor() {
                         else -> Skip
                     }
                 }
-                .onFailure { Logger.e("getKeyEntry pre-hook failed uid=$callingUid", it) }
+                .onFailure { Log.e(TAG, "getKeyEntry pre-hook failed uid=$callingUid", it) }
                 .getOrNull() ?: Skip
         }
         if (
@@ -298,7 +299,7 @@ object Keystore2Interceptor : BaseKeystoreInterceptor() {
     private fun safeTypedObjectReply(response: KeyEntryResponse, label: String): Result {
         val reply = kotlin.runCatching { createTypedObjectReply(response) }.getOrNull()
         if (reply != null) return reply
-        Logger.e("Failed to serialize KeyEntryResponse ($label), falling through to real keystore")
+        Log.e(TAG, "Failed to serialize KeyEntryResponse ($label), falling through to real keystore")
         return Continue
     }
 
@@ -332,10 +333,10 @@ object Keystore2Interceptor : BaseKeystoreInterceptor() {
                 val p = Parcel.obtain()
                 p.writeNoException()
                 p.writeTypedArray(merged, 0)
-                Logger.i("listEntries${if (batched) "Batched" else ""}: merged ${toAdd.size} TSOSS alias(es) for uid=$callingUid")
+                Log.i(TAG, "listEntries${if (batched) "Batched" else ""}: merged ${toAdd.size} TSOSS alias(es) for uid=$callingUid")
                 OverrideReply(0, p)
             }
-            .onFailure { Logger.e("listEntries merge failed uid=$callingUid", it) }
+            .onFailure { Log.e(TAG, "listEntries merge failed uid=$callingUid", it) }
             .getOrNull() ?: Skip
 
     override fun onPostTransact(
@@ -371,7 +372,7 @@ object Keystore2Interceptor : BaseKeystoreInterceptor() {
                         }
                     }
                 }
-                .onFailure { Logger.e("deleteKey cleanup failed", it) }
+                .onFailure { Log.e(TAG, "deleteKey cleanup failed", it) }
             return Skip
         }
 
@@ -389,17 +390,17 @@ object Keystore2Interceptor : BaseKeystoreInterceptor() {
                             val k = SecurityLevelInterceptor.Key(callingUid, alias)
                             SecurityLevelInterceptor.patchedResponses.remove(k)
                             SecurityLevelInterceptor.skipLeafHacks.remove(k)
-                            Logger.i("Invalidated cached response for uid=$callingUid alias=$alias after updateSubcomponent")
+                            Log.i(TAG, "Invalidated cached response for uid=$callingUid alias=$alias after updateSubcomponent")
                         }
                     }
                 }
-                .onFailure { Logger.e("updateSubcomponent cleanup failed", it) }
+                .onFailure { Log.e(TAG, "updateSubcomponent cleanup failed", it) }
             return Skip
         }
 
         if (reply.hasException()) return Skip
         val p = Parcel.obtain()
-        Logger.d("intercept post $target uid=$callingUid pid=$callingPid dataSz=${data.dataSize()} replySz=${reply.dataSize()}")
+        Log.d(TAG, "intercept post $target uid=$callingUid pid=$callingPid dataSz=${data.dataSize()} replySz=${reply.dataSize()}")
 
         if (code == getKeyEntryTransaction) {
             try {
@@ -416,7 +417,7 @@ object Keystore2Interceptor : BaseKeystoreInterceptor() {
                         response.putCertificateChain(newChain).getOrThrow()
                         response.metadata?.authorizations = CertificateHack.patchAuthorizations(response.metadata?.authorizations)
                         if (cachedKey != null) SecurityLevelInterceptor.patchedResponses[cachedKey] = response
-                        Logger.d("Hacked certificate for uid=$callingUid")
+                        Log.d(TAG, "Hacked certificate for uid=$callingUid")
                         return createTypedObjectReply(response)
                     } else {
                         p.recycle()
@@ -425,7 +426,7 @@ object Keystore2Interceptor : BaseKeystoreInterceptor() {
                     p.recycle()
                 }
             } catch (t: Throwable) {
-                Logger.w(
+                Log.w(TAG, 
                     "getKeyEntry post-hook chain patch failed for uid=$callingUid pid=$callingPid; serving unpatched real chain",
                     t,
                 )

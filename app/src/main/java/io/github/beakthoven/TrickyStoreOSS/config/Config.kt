@@ -14,7 +14,8 @@ import android.os.ServiceManager
 import io.github.beakthoven.TrickyStoreOSS.AttestUtils.TEEStatus
 import io.github.beakthoven.TrickyStoreOSS.KeyBoxUtils
 import io.github.beakthoven.TrickyStoreOSS.interceptors.SecurityLevelInterceptor
-import io.github.beakthoven.TrickyStoreOSS.logging.Logger
+import android.util.Log
+import io.github.beakthoven.TrickyStoreOSS.logging.TAG
 import java.io.File
 
 object PkgConfig {
@@ -54,16 +55,16 @@ object PkgConfig {
                         }
                     }
                 }
-                Logger.i("update hack packages: $hackPackages, generate packages=$generatePackages, packageModes=$packageModes")
+                Log.i(TAG, "update hack packages: $hackPackages, generate packages=$generatePackages, packageModes=$packageModes")
             }
-            .onFailure { Logger.e("failed to update target files", it) }
+            .onFailure { Log.e(TAG, "failed to update target files", it) }
 
     private fun updateKeyBox(f: File?) =
         runCatching {
                 KeyBoxUtils.readFromXml(f?.readText())
                 SecurityLevelInterceptor.cleanupAll()
             }
-            .onFailure { Logger.e("failed to update keybox", it) }
+            .onFailure { Log.e(TAG, "failed to update keybox", it) }
 
     private const val CONFIG_PATH = "/data/adb/tricky_store"
     private const val TARGET_FILE = "target.txt"
@@ -79,9 +80,9 @@ object PkgConfig {
         teeBroken = !TEEStatus
         try {
             statusFile.writeText("teeBroken=${teeBroken}")
-            Logger.i("TEE status written to $statusFile: teeBroken=$teeBroken")
+            Log.i(TAG, "TEE status written to $statusFile: teeBroken=$teeBroken")
         } catch (e: Exception) {
-            Logger.e("Failed to write TEE status: ${e.message}")
+            Log.e(TAG, "Failed to write TEE status: ${e.message}")
         }
     }
 
@@ -120,11 +121,11 @@ object PkgConfig {
         if (scope.exists()) {
             updateTargetPackages(scope)
         } else {
-            Logger.e("target.txt file not found, please put it to $scope !")
+            Log.e(TAG, "target.txt file not found, please put it to $scope !")
         }
         val keybox = File(root, KEYBOX_FILE)
         if (!keybox.exists()) {
-            Logger.e("keybox file not found, please put it to $keybox !")
+            Log.e(TAG, "keybox file not found, please put it to $keybox !")
         } else {
             updateKeyBox(keybox)
         }
@@ -166,7 +167,7 @@ object PkgConfig {
                 }
                 return false
             }
-            .onFailure { Logger.e("failed to get packages", it) }
+            .onFailure { Log.e(TAG, "failed to get packages", it) }
             .getOrNull() ?: false
 
     fun needHack(callingUid: Int): Boolean = checkNeed(callingUid, Mode.LEAF_HACK, teeBroken == false)
@@ -208,7 +209,7 @@ object PkgConfig {
                         all = all,
                     )
             }
-            .onFailure { Logger.e("failed to update patch level", it) }
+            .onFailure { Log.e(TAG, "failed to update patch level", it) }
 
     private fun waitAndGetSystemService(name: String): IBinder? {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
@@ -219,13 +220,13 @@ object PkgConfig {
         while (tryCount++ < 70) {
             val service = ServiceManager.getService(name)
             if (service != null) {
-                Logger.d("Got $name service after $tryCount tries")
+                Log.d(TAG, "Got $name service after $tryCount tries")
                 return service
             }
             Thread.sleep(500)
         }
 
-        Logger.e("Failed to get $name service")
+        Log.e(TAG, "Failed to get $name service")
         return null
     }
 }

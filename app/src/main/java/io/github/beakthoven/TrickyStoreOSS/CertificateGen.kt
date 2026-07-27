@@ -17,7 +17,8 @@ import android.system.keystore2.KeyDescriptor
 import android.security.keymaster.KeymasterDefs
 import io.github.beakthoven.TrickyStoreOSS.config.PkgConfig
 import io.github.beakthoven.TrickyStoreOSS.interceptors.SecurityLevelInterceptor
-import io.github.beakthoven.TrickyStoreOSS.logging.Logger
+import android.util.Log
+import io.github.beakthoven.TrickyStoreOSS.logging.TAG
 import java.math.BigInteger
 import java.nio.charset.StandardCharsets
 import java.security.KeyPair
@@ -120,7 +121,7 @@ object CertificateGen {
                             Tag.ATTESTATION_ID_SERIAL -> serialno = v.blob
                         }
                     }
-                    .onFailure { Logger.d("Skipping key parameter tag=${p.tag}: ${it.message}") }
+                    .onFailure { Log.d(TAG, "Skipping key parameter tag=${p.tag}: ${it.message}") }
             }
             if (ecCurveName == null && keySize != 0) ecCurveName = resolveEcCurveName(0, keySize)
         }
@@ -130,26 +131,26 @@ object CertificateGen {
         runCatching {
                 when (params.algorithm) {
                     Algorithm.EC -> {
-                        Logger.d("Generating EC keypair of size ${params.keySize}")
+                        Log.d(TAG, "Generating EC keypair of size ${params.keySize}")
                         KeyPairGenerator.getInstance("EC", BouncyCastleProvider.PROVIDER_NAME)
                             .apply { initialize(ECGenParameterSpec(params.ecCurveName ?: "secp256r1")) }
                             .generateKeyPair()
                     }
 
                     Algorithm.RSA -> {
-                        Logger.d("Generating RSA keypair of size ${params.keySize}")
+                        Log.d(TAG, "Generating RSA keypair of size ${params.keySize}")
                         KeyPairGenerator.getInstance("RSA", BouncyCastleProvider.PROVIDER_NAME)
                             .apply { initialize(RSAKeyGenParameterSpec(params.keySize, params.rsaPublicExponent)) }
                             .generateKeyPair()
                     }
 
                     else -> {
-                        Logger.i("Skipping non-EC/non-RSA algorithm: ${params.algorithm}")
+                        Log.i(TAG, "Skipping non-EC/non-RSA algorithm: ${params.algorithm}")
                         null
                     }
                 }
             }
-            .onFailure { Logger.e("Failed to generate key pair", it) }
+            .onFailure { Log.e(TAG, "Failed to generate key pair", it) }
             .getOrNull()
 
     fun generateSecretKey(params: KeyGenParameters): javax.crypto.SecretKey? =
@@ -177,7 +178,7 @@ object CertificateGen {
                     else -> null
                 }
             }
-            .onFailure { Logger.e("Failed to generate secret key", it) }
+            .onFailure { Log.e(TAG, "Failed to generate secret key", it) }
             .getOrNull()
 
     fun generateKeyPair(
@@ -188,13 +189,13 @@ object CertificateGen {
         securityLevel: Int = 1,
     ): Pair<KeyPair, List<Certificate>>? =
         runCatching {
-                Logger.i("Requested KeyPair with alias: ${descriptor.alias}")
-                attestKeyDescriptor?.let { Logger.i("Requested KeyPair with attestKey: ${it.alias}") }
+                Log.i(TAG, "Requested KeyPair with alias: ${descriptor.alias}")
+                attestKeyDescriptor?.let { Log.i(TAG, "Requested KeyPair with attestKey: ${it.alias}") }
 
                 val keyPair = generateKeyPair(params) ?: return null
                 val keybox = getKeyboxForAlgorithm(params.algorithm) ?: return null
                 if (keybox.certificates.isEmpty()) {
-                    Logger.e("Keybox has no certificates")
+                    Log.e(TAG, "Keybox has no certificates")
                     return null
                 }
 
@@ -209,7 +210,7 @@ object CertificateGen {
                 }
                 keyPair to chain
             }
-            .onFailure { Logger.e("Failed to generate key pair with certificates", it) }
+            .onFailure { Log.e(TAG, "Failed to generate key pair with certificates", it) }
             .getOrNull()
 
     private fun getKeyboxForAlgorithm(algorithm: Int): KeyBox? {
@@ -220,7 +221,7 @@ object CertificateGen {
                 Algorithm.RSA -> KeyProperties.KEY_ALGORITHM_RSA
 
                 else -> {
-                    Logger.e("Unsupported algorithm: $algorithm")
+                    Log.e(TAG, "Unsupported algorithm: $algorithm")
                     null
                 }
             } ?: return null
@@ -306,7 +307,7 @@ object CertificateGen {
                     addAll(keybox.certificates)
                 }.map { it.encoded }
             }
-            .onFailure { Logger.e("Failed to generate certificate chain", it) }
+            .onFailure { Log.e(TAG, "Failed to generate certificate chain", it) }
             .getOrNull()
 
     private fun buildAttestExtension(params: KeyGenParameters, uid: Int, securityLevel: Int = 1): Extension {

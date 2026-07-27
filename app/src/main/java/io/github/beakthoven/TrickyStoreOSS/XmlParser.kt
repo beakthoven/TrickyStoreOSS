@@ -8,7 +8,8 @@ package io.github.beakthoven.TrickyStoreOSS
 import android.security.keystore.KeyProperties
 import io.github.beakthoven.TrickyStoreOSS.CertificateGen.KeyBox
 import io.github.beakthoven.TrickyStoreOSS.CertificateHack.clearLeafAlgorithms
-import io.github.beakthoven.TrickyStoreOSS.logging.Logger
+import android.util.Log
+import io.github.beakthoven.TrickyStoreOSS.logging.TAG
 import java.io.IOException
 import java.io.StringReader
 import java.security.cert.Certificate
@@ -140,7 +141,7 @@ object KeyBoxUtils {
         clearLeafAlgorithms()
 
         if (xmlData == null) {
-            Logger.i("Clearing all keyboxes")
+            Log.i(TAG, "Clearing all keyboxes")
             return
         }
 
@@ -153,9 +154,9 @@ object KeyBoxUtils {
 
             repeat(numberOfKeyboxes) { i -> processKeybox(xmlParser, i) }
 
-            Logger.i("Successfully updated $numberOfKeyboxes keyboxes")
+            Log.i(TAG, "Successfully updated $numberOfKeyboxes keyboxes")
         } catch (t: Throwable) {
-            Logger.e("Error loading XML file (keyboxes cleared)", t)
+            Log.e(TAG, "Error loading XML file (keyboxes cleared)", t)
         }
     }
 
@@ -196,7 +197,7 @@ object KeyBoxUtils {
 
             keyboxes[algorithmName] = KeyBox(keyPair, certificateChain)
         } catch (t: Throwable) {
-            Logger.e("Error processing keybox $index", t)
+            Log.e(TAG, "Error processing keybox $index", t)
             throw t
         }
     }
