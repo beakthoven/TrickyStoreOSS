@@ -359,6 +359,7 @@ object CertificateGen {
         }
         teeSet(4, params.blockMode)
         teeSet(6, params.padding)
+        if (AndroidUtils.attestVersion >= 100) teeSet(203, params.mgfDigest)
         if (params.algorithm == Algorithm.EC && params.ecCurve != 0) teeTag(10, ASN1Integer(params.ecCurve.toLong()))
         if (params.algorithm == Algorithm.RSA && params.rsaPublicExponent != null)
             teeTag(200, ASN1Integer(params.rsaPublicExponent))

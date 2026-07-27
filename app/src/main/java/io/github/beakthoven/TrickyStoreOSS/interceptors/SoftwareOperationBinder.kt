@@ -40,6 +40,7 @@ internal class OpRequest(
     val blockMode: Int = 0,
     val nonce: ByteArray? = null,
     val macLength: Int? = null,
+    val mgfDigest: Int = 0,
 ) {
     companion object {
         fun parse(params: Array<KeyParameter>): OpRequest {
@@ -49,6 +50,7 @@ internal class OpRequest(
             var blockMode = 0
             var nonce: ByteArray? = null
             var macLength: Int? = null
+            var mgfDigest = 0
             for (p in params) {
                 try {
                     val v = p.value
@@ -59,11 +61,12 @@ internal class OpRequest(
                         Tag.BLOCK_MODE -> blockMode = v.blockMode
                         Tag.NONCE -> nonce = v.blob
                         Tag.MAC_LENGTH -> macLength = v.integer
+                        Tag.RSA_OAEP_MGF_DIGEST -> mgfDigest = v.digest
                     }
                 } catch (_: Exception) {
                 }
             }
-            return OpRequest(purpose, digest, padding, blockMode, nonce, macLength)
+            return OpRequest(purpose, digest, padding, blockMode, nonce, macLength, mgfDigest)
         }
     }
 }
@@ -88,6 +91,9 @@ internal fun authorizeOperation(keyParams: KeyGenParameters, op: OpRequest): Int
     if (keyParams.padding.isNotEmpty() && op.padding !in keyParams.padding) return KeymasterDefs.KM_ERROR_UNSUPPORTED_PADDING_MODE
     if (keyParams.blockMode.isNotEmpty() && op.blockMode !in keyParams.blockMode)
         return KeymasterDefs.KM_ERROR_UNSUPPORTED_BLOCK_MODE
+    val effectiveMgfDigest = if (op.mgfDigest != 0) op.mgfDigest else KeymasterDefs.KM_DIGEST_SHA1
+    if (keyParams.mgfDigest.isNotEmpty() && effectiveMgfDigest !in keyParams.mgfDigest)
+        return KeymasterDefs.KM_ERROR_UNSUPPORTED_MGF_DIGEST
     return null
 }
 
@@ -347,6 +353,26 @@ private constructor(
                 else -> "SHA256"
             }
 
+        private fun oaepDigestName(digest: Int) =
+            when (digest) {
+                KeymasterDefs.KM_DIGEST_SHA1 -> "SHA-1"
+                KeymasterDefs.KM_DIGEST_SHA_2_224 -> "SHA-224"
+                KeymasterDefs.KM_DIGEST_SHA_2_256 -> "SHA-256"
+                KeymasterDefs.KM_DIGEST_SHA_2_384 -> "SHA-384"
+                KeymasterDefs.KM_DIGEST_SHA_2_512 -> "SHA-512"
+                else -> "SHA-256"
+            }
+
+        private fun mgf1ParameterSpec(digest: Int) =
+            when (digest) {
+                KeymasterDefs.KM_DIGEST_SHA1 -> MGF1ParameterSpec.SHA1
+                KeymasterDefs.KM_DIGEST_SHA_2_224 -> MGF1ParameterSpec.SHA224
+                KeymasterDefs.KM_DIGEST_SHA_2_256 -> MGF1ParameterSpec.SHA256
+                KeymasterDefs.KM_DIGEST_SHA_2_384 -> MGF1ParameterSpec.SHA384
+                KeymasterDefs.KM_DIGEST_SHA_2_512 -> MGF1ParameterSpec.SHA512
+                else -> MGF1ParameterSpec.SHA1
+            }
+
         private fun signatureAlgorithm(algorithm: Int, digest: Int, padding: Int?): String {
             val keyAlgo =
                 when (algorithm) {
@@ -403,7 +429,7 @@ private constructor(
                     when {
                         blockMode == KeymasterDefs.KM_MODE_GCM -> GCMParameterSpec(op.macLength ?: 128, op.nonce ?: ByteArray(12))
                         padding == KeymasterDefs.KM_PAD_RSA_OAEP ->
-                            OAEPParameterSpec(digestJcaName(digest), "MGF1", MGF1ParameterSpec.SHA1, PSource.PSpecified.DEFAULT)
+                            OAEPParameterSpec(oaepDigestName(digest), "MGF1", mgf1ParameterSpec(op.mgfDigest), PSource.PSpecified.DEFAULT)
                         op.nonce != null -> IvParameterSpec(op.nonce)
                         else -> null
                     }
