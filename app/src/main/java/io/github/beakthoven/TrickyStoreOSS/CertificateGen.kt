@@ -20,16 +20,21 @@ import io.github.beakthoven.TrickyStoreOSS.config.PkgConfig
 import io.github.beakthoven.TrickyStoreOSS.interceptors.SecurityLevelInterceptor
 import android.util.Log
 import io.github.beakthoven.TrickyStoreOSS.logging.TAG
+import java.io.File
 import java.math.BigInteger
+import java.nio.ByteBuffer
 import java.nio.charset.StandardCharsets
 import java.security.KeyPair
 import java.security.KeyPairGenerator
 import java.security.MessageDigest
+import java.security.SecureRandom
 import java.security.cert.Certificate
 import java.security.cert.X509Certificate
 import java.security.spec.ECGenParameterSpec
 import java.security.spec.RSAKeyGenParameterSpec
 import java.util.Date
+import javax.crypto.Mac
+import javax.crypto.spec.SecretKeySpec
 import javax.security.auth.x500.X500Principal
 import org.bouncycastle.asn1.ASN1Boolean
 import org.bouncycastle.asn1.ASN1Encodable
@@ -82,6 +87,7 @@ object CertificateGen {
         var imei2: ByteArray? = null,
         var meid: ByteArray? = null,
         var serialno: ByteArray? = null,
+        var includeUniqueId: Boolean? = null,
     ) {
         constructor(params: Array<KeyParameter>) : this() {
             params.forEach { p ->
@@ -120,6 +126,7 @@ object CertificateGen {
                             Tag.ATTESTATION_ID_SECOND_IMEI -> imei2 = v.blob
                             Tag.ATTESTATION_ID_MEID -> meid = v.blob
                             Tag.ATTESTATION_ID_SERIAL -> serialno = v.blob
+                            Tag.INCLUDE_UNIQUE_ID -> includeUniqueId = v.boolValue
                         }
                     }
                     .onFailure { Log.d(TAG, "Skipping key parameter tag=${p.tag}: ${it.message}") }
@@ -325,9 +332,17 @@ object CertificateGen {
         val hash = AndroidUtils.getBootHashFromProp()
         val rootOfTrust = DERSequence(arrayOf(DEROctetString(key), ASN1Boolean.TRUE, ASN1Enumerated(0), DEROctetString(hash)))
         val osVersion = ASN1Integer(AndroidUtils.osVersion.toLong())
-        val creationDateTime = ASN1Integer(System.currentTimeMillis())
+        val creationTimeMs = System.currentTimeMillis()
+        val creationDateTime = ASN1Integer(creationTimeMs)
         val origin = ASN1Integer(0L)
         val moduleHash = DEROctetString(AndroidUtils.moduleHash)
+        val applicationId = if (params.attestationChallenge != null) createApplicationId(uid) else null
+        val uniqueId =
+            if (params.includeUniqueId == true && applicationId != null) {
+                computeUniqueId(creationTimeMs, applicationId.octets)
+            } else {
+                ByteArray(0)
+            }
 
         val tee = mutableListOf<ASN1Encodable>()
 
@@ -369,7 +384,7 @@ object CertificateGen {
         tee.sortBy { (it as DERTaggedObject).tagNo }
 
         val sw = mutableListOf<ASN1Encodable>(DERTaggedObject(true, 701, creationDateTime))
-        if (params.attestationChallenge != null) sw.add(DERTaggedObject(true, 709, createApplicationId(uid)))
+        if (applicationId != null) sw.add(DERTaggedObject(true, 709, applicationId))
         if (AndroidUtils.attestVersion >= 400) sw.add(DERTaggedObject(true, 724, moduleHash))
 
         val keyDesc =
@@ -379,11 +394,39 @@ object CertificateGen {
                 ASN1Integer(AndroidUtils.keymasterVersion.toLong()),
                 ASN1Enumerated(securityLevel),
                 DEROctetString(params.attestationChallenge ?: ByteArray(0)),
-                DEROctetString(ByteArray(0)),
+                DEROctetString(uniqueId),
                 DERSequence(sw.toTypedArray()),
                 DERSequence(tee.toTypedArray()),
             )
         return Extension(ATTESTATION_OID, false, DEROctetString(DERSequence(keyDesc).encoded))
+    }
+
+    // persisted so the unique_id stays stable across reboots; ephemeral fallback if unwritable
+    private val hbk: ByteArray by lazy {
+        val file = File("/data/adb/tricky_store/hbk")
+        if (file.exists() && file.length() == 32L) {
+            file.readBytes()
+        } else {
+            val k = ByteArray(32).also { SecureRandom().nextBytes(it) }
+            file.parentFile?.mkdirs()
+            file.writeBytes(k)
+            k
+        }
+    }
+
+    // counter advances every ~30 days, so later keys get a different unique_id like real hardware
+    private fun computeUniqueId(creationTimeMs: Long, aaidDer: ByteArray): ByteArray {
+        val temporalCounter = creationTimeMs / 2592000000L
+        val message =
+            ByteBuffer
+                .allocate(8 + aaidDer.size + 1)
+                .putLong(temporalCounter)
+                .put(aaidDer)
+                .put(0x00)
+                .array()
+        val mac = Mac.getInstance("HmacSHA256")
+        mac.init(SecretKeySpec(hbk, "HmacSHA256"))
+        return mac.doFinal(message).copyOf(16)
     }
 
     @Throws(Throwable::class)
