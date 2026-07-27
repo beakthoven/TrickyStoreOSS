@@ -25,18 +25,6 @@ import org.bouncycastle.openssl.PEMParser
 import org.bouncycastle.openssl.jcajce.JcaPEMKeyConverter
 import org.bouncycastle.util.io.pem.PemReader
 
-sealed class ParseResult<out T> {
-    data class Success<T>(val data: T) : ParseResult<T>()
-
-    data class Error(val message: String, val cause: Throwable? = null) : ParseResult<Nothing>()
-
-    fun getOrThrow(): T =
-        when (this) {
-            is Success -> data
-            is Error -> throw Exception(message, cause)
-        }
-}
-
 object CertificateUtils {
     val certificateFactory: CertificateFactory by lazy {
         try {
@@ -113,30 +101,17 @@ object CertificateUtils {
     }
 
     // Certificate parsing utilities
-    fun parseKeyPair(keyContent: String): ParseResult<PEMKeyPair> {
-        return try {
-            PEMParser(StringReader(keyContent.trimLine())).use { parser ->
-                val pemObject = parser.readObject()
-                if (pemObject is PEMKeyPair) {
-                    ParseResult.Success(pemObject)
-                } else {
-                    ParseResult.Error("Invalid PEM key pair format")
-                }
-            }
-        } catch (t: Throwable) {
-            ParseResult.Error("Failed to parse PEM key pair", t)
+    fun parseKeyPair(keyContent: String): Result<PEMKeyPair> = runCatching {
+        PEMParser(StringReader(keyContent.trimLine())).use { parser ->
+            (parser.readObject() as? PEMKeyPair)
+                ?: throw IllegalStateException("Invalid PEM key pair format")
         }
     }
 
-    fun parseCertificate(certContent: String): ParseResult<Certificate> {
-        return try {
-            PemReader(StringReader(certContent.trimLine())).use { reader ->
-                val pemObject = reader.readPemObject()
-                val certificate = certificateFactory.generateCertificate(ByteArrayInputStream(pemObject.content))
-                ParseResult.Success(certificate)
-            }
-        } catch (t: Throwable) {
-            ParseResult.Error("Failed to parse certificate", t)
+    fun parseCertificate(certContent: String): Result<Certificate> = runCatching {
+        PemReader(StringReader(certContent.trimLine())).use { reader ->
+            val pemObject = reader.readPemObject()
+            certificateFactory.generateCertificate(ByteArrayInputStream(pemObject.content))
         }
     }
 

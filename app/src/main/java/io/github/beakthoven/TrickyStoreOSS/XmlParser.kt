@@ -19,23 +19,14 @@ import org.xmlpull.v1.XmlPullParserFactory
 
 class XmlParser(private val xmlContent: String) {
 
-    fun obtainPath(path: String): ParseResult<Map<String, String>> {
-        return try {
-            val factory = XmlPullParserFactory.newInstance()
-            val parser = factory.newPullParser()
-            parser.setFeature(XmlPullParser.FEATURE_PROCESS_NAMESPACES, false)
-            parser.setInput(StringReader(xmlContent))
+    fun obtainPath(path: String): Result<Map<String, String>> = runCatching {
+        val factory = XmlPullParserFactory.newInstance()
+        val parser = factory.newPullParser()
+        parser.setFeature(XmlPullParser.FEATURE_PROCESS_NAMESPACES, false)
+        parser.setInput(StringReader(xmlContent))
 
-            val tags = path.split(".").toTypedArray()
-            val result = readData(parser, tags, 0, mutableMapOf())
-            ParseResult.Success(result)
-        } catch (e: XmlPullParserException) {
-            ParseResult.Error("XML parsing error: ${e.message}", e)
-        } catch (e: IOException) {
-            ParseResult.Error("IO error while parsing XML: ${e.message}", e)
-        } catch (e: Exception) {
-            ParseResult.Error("Unexpected error: ${e.message}", e)
-        }
+        val tags = path.split(".").toTypedArray()
+        readData(parser, tags, 0, mutableMapOf())
     }
 
     @Throws(IOException::class, XmlPullParserException::class)
