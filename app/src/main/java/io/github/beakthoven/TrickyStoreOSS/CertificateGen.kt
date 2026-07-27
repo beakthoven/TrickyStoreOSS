@@ -301,13 +301,10 @@ object CertificateGen {
                 val keybox = getKeyboxForAlgorithm(params.algorithm) ?: return null
                 val issuer = X509CertificateHolder(keybox.certificates[0].encoded).subject
                 val leaf = buildCertificate(keyPair, keybox, params, issuer, uid, securityLevel)
-                CertificateUtils.run {
-                    buildList {
-                            add(leaf)
-                            addAll(keybox.certificates)
-                        }
-                        .toByteArrayList()
-                }
+                buildList {
+                    add(leaf)
+                    addAll(keybox.certificates)
+                }.map { it.encoded }
             }
             .onFailure { Logger.e("Failed to generate certificate chain", it) }
             .getOrNull()

@@ -80,11 +80,6 @@ object CertificateUtils {
             .onFailure { Logger.w("Failed to convert certificates to byte array", it) }
             .getOrNull()
 
-    fun Collection<Certificate>.toByteArrayList(): List<ByteArray>? =
-        runCatching { map { it.encoded } }
-            .onFailure { Logger.w("Failed to convert certificates to byte array list", it) }
-            .getOrNull()
-
     fun KeyEntryResponse?.getCertificateChain(): Array<Certificate>? {
         val metadata = this?.metadata ?: return null
         val leafCert = metadata.certificate?.toCertificate() ?: return null
