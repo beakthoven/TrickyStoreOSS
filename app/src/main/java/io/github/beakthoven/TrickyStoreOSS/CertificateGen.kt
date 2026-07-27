@@ -95,7 +95,7 @@ object CertificateGen {
                             Tag.RSA_PUBLIC_EXPONENT -> rsaPublicExponent = BigInteger.valueOf(v.longInteger)
                             Tag.EC_CURVE -> {
                                 ecCurve = v.ecCurve
-                                ecCurveName = ecCurveName(ecCurve)
+                                ecCurveName = resolveEcCurveName(ecCurve, 0)
                             }
                             Tag.PURPOSE -> purpose.add(v.keyPurpose)
                             Tag.DIGEST -> digest.add(v.digest)
@@ -122,7 +122,7 @@ object CertificateGen {
                     }
                     .onFailure { Logger.d("Skipping key parameter tag=${p.tag}: ${it.message}") }
             }
-            if (ecCurveName == null && keySize != 0) ecCurveName = ecCurveNameByKeySize(keySize)
+            if (ecCurveName == null && keySize != 0) ecCurveName = resolveEcCurveName(0, keySize)
         }
     }
 
@@ -275,29 +275,25 @@ object CertificateGen {
                     )
             }
         val signer =
-            JcaContentSignerBuilder("${CertificateUtils.digestJcaName(params.digest.firstOrNull { it != 0 } ?: 0)}with$signerAlgorithm")
+            JcaContentSignerBuilder("${CertificateUtils.digestName(params.digest.firstOrNull { it != 0 } ?: 0, false)}with$signerAlgorithm")
                 .setProvider(BouncyCastleProvider.PROVIDER_NAME)
                 .build(signingKeyPair.private)
         return JcaX509CertificateConverter().setProvider(BouncyCastleProvider.PROVIDER_NAME).getCertificate(builder.build(signer))
     }
 
-    private fun ecCurveName(curve: Int): String =
+    private fun resolveEcCurveName(curve: Int, keySize: Int): String =
         when (curve) {
             EcCurve.CURVE_25519 -> "CURVE_25519"
             EcCurve.P_224 -> "secp224r1"
             EcCurve.P_256 -> "secp256r1"
             EcCurve.P_384 -> "secp384r1"
             EcCurve.P_521 -> "secp521r1"
-            else -> "secp256r1"
-        }
-
-    private fun ecCurveNameByKeySize(size: Int): String =
-        when (size) {
-            224 -> "secp224r1"
-            256 -> "secp256r1"
-            384 -> "secp384r1"
-            521 -> "secp521r1"
-            else -> "secp256r1"
+            else -> when (keySize) {
+                224 -> "secp224r1"
+                384 -> "secp384r1"
+                521 -> "secp521r1"
+                else -> "secp256r1"
+            }
         }
 
     fun generateChain(uid: Int, params: KeyGenParameters, keyPair: KeyPair, securityLevel: Int = 1): List<ByteArray>? =

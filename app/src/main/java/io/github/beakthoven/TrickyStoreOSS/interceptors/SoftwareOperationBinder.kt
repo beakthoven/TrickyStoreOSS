@@ -278,7 +278,7 @@ private constructor(
                                 "Unsupported purpose for HMAC: $purpose",
                             )
                         MacEngine(
-                            Mac.getInstance("Hmac${CertificateUtils.digestJcaName(digest)}").apply {
+                            Mac.getInstance("Hmac${CertificateUtils.digestName(digest, false)}").apply {
                                 init(
                                     info.secretKey
                                         ?: throw ServiceSpecificException(
@@ -336,16 +336,6 @@ private constructor(
             return SoftwareOperationBinder(engine, usageKey, p.usageCountLimit)
         }
 
-        private fun oaepDigestName(digest: Int) =
-            when (digest) {
-                KeymasterDefs.KM_DIGEST_SHA1 -> "SHA-1"
-                KeymasterDefs.KM_DIGEST_SHA_2_224 -> "SHA-224"
-                KeymasterDefs.KM_DIGEST_SHA_2_256 -> "SHA-256"
-                KeymasterDefs.KM_DIGEST_SHA_2_384 -> "SHA-384"
-                KeymasterDefs.KM_DIGEST_SHA_2_512 -> "SHA-512"
-                else -> "SHA-256"
-            }
-
         private fun mgf1ParameterSpec(digest: Int) =
             when (digest) {
                 KeymasterDefs.KM_DIGEST_SHA1 -> MGF1ParameterSpec.SHA1
@@ -367,9 +357,9 @@ private constructor(
                             "Unsupported signature algorithm",
                         )
                 }
-            val name = "${CertificateUtils.digestJcaName(digest)}with$keyAlgo"
+            val name = "${CertificateUtils.digestName(digest, false)}with$keyAlgo"
             return if (algorithm == Algorithm.RSA && padding == KeymasterDefs.KM_PAD_RSA_PSS)
-                "${CertificateUtils.digestJcaName(digest)}withRSA/PSS"
+                "${CertificateUtils.digestName(digest, false)}withRSA/PSS"
             else name
         }
 
@@ -412,7 +402,7 @@ private constructor(
                     when {
                         blockMode == KeymasterDefs.KM_MODE_GCM -> GCMParameterSpec(op.macLength ?: 128, op.nonce ?: ByteArray(12))
                         padding == KeymasterDefs.KM_PAD_RSA_OAEP ->
-                            OAEPParameterSpec(oaepDigestName(digest), "MGF1", mgf1ParameterSpec(op.mgfDigest), PSource.PSpecified.DEFAULT)
+                            OAEPParameterSpec(CertificateUtils.digestName(digest, true), "MGF1", mgf1ParameterSpec(op.mgfDigest), PSource.PSpecified.DEFAULT)
                         op.nonce != null -> IvParameterSpec(op.nonce)
                         else -> null
                     }

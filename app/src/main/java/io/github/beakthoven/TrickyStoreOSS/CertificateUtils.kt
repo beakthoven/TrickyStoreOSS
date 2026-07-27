@@ -35,15 +35,17 @@ object CertificateUtils {
         }
     }
 
-    fun digestJcaName(digest: Int): String =
-        when (digest) {
-            KeymasterDefs.KM_DIGEST_SHA1 -> "SHA1"
-            KeymasterDefs.KM_DIGEST_SHA_2_224 -> "SHA224"
-            KeymasterDefs.KM_DIGEST_SHA_2_256 -> "SHA256"
-            KeymasterDefs.KM_DIGEST_SHA_2_384 -> "SHA384"
-            KeymasterDefs.KM_DIGEST_SHA_2_512 -> "SHA512"
-            else -> "SHA256"
+    fun digestName(digest: Int, hyphenated: Boolean): String {
+        val suffix = when (digest) {
+            KeymasterDefs.KM_DIGEST_SHA1 -> "1"
+            KeymasterDefs.KM_DIGEST_SHA_2_224 -> "224"
+            KeymasterDefs.KM_DIGEST_SHA_2_256 -> "256"
+            KeymasterDefs.KM_DIGEST_SHA_2_384 -> "384"
+            KeymasterDefs.KM_DIGEST_SHA_2_512 -> "512"
+            else -> "256"
         }
+        return if (hyphenated) "SHA-$suffix" else "SHA$suffix"
+    }
 
     fun ByteArray?.toCertificate(): X509Certificate? {
         return this?.let { bytes ->
