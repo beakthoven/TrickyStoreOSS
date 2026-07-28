@@ -38,6 +38,9 @@ constexpr uint32_t kActionOverrideReply = 3;
 constexpr uint32_t kActionOverrideData = 4;
 
 constexpr uint32_t kBackdoorCode = 0xdeadbeef;
+
+// AIDL user codes stay under this; system protocol codes (PING/INTERFACE/DUMP/...) sit above
+constexpr uint32_t kMaxUserTransactionCode = 0x00ffffff;
 } // namespace intercept_constants
 } // namespace
 
@@ -141,6 +144,9 @@ bool processBinderTransaction(binder_transaction_data *transaction_data) {
         transaction_info.target_binder = nullptr;
         should_intercept = true;
         LOGD("Backdoor transaction detected from root user");
+    } else if (transaction_data->code > intercept_constants::kMaxUserTransactionCode) {
+        // system protocol code (PING/INTERFACE/DUMP/...): skip the registry lookup
+        return false;
     } else {
         auto *weak_ref = reinterpret_cast<RefBase::weakref_type *>(transaction_data->target.ptr);
         if (weak_ref->attemptIncStrong(nullptr)) {
@@ -178,6 +184,16 @@ void processBinderWriteRead(const binder_write_read &write_read_data) {
 
     auto buffer_ptr = write_read_data.read_buffer;
     auto remaining_bytes = write_read_data.read_consumed;
+
+    // bail early on a lone non-transaction command; multi-command buffers may still hold a txn
+    {
+        auto first_cmd = *reinterpret_cast<const uint32_t *>(buffer_ptr);
+        if (first_cmd != BR_TRANSACTION && first_cmd != BR_TRANSACTION_SEC_CTX) {
+            if (remaining_bytes == sizeof(uint32_t) + _IOC_SIZE(first_cmd)) {
+                return;
+            }
+        }
+    }
 
     while (remaining_bytes > 0) {
         if (remaining_bytes < sizeof(uint32_t)) {
