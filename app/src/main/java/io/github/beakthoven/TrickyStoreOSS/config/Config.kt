@@ -19,9 +19,8 @@ import io.github.beakthoven.TrickyStoreOSS.logging.TAG
 import java.io.File
 
 object PkgConfig {
-    private val hackPackages = mutableSetOf<String>()
-    private val generatePackages = mutableSetOf<String>()
-    private val packageModes = mutableMapOf<String, Mode>()
+    // volatile immutable map; swapped on reload so binder threads read a consistent snapshot
+    @Volatile private var packageModes: Map<String, Mode> = emptyMap()
 
     enum class Mode {
         AUTO,
@@ -31,31 +30,19 @@ object PkgConfig {
 
     private fun updateTargetPackages(f: File?) =
         runCatching {
-                hackPackages.clear()
-                generatePackages.clear()
-                packageModes.clear()
+                val modes = mutableMapOf<String, Mode>()
                 f?.readLines()?.forEach {
                     if (it.isNotBlank() && !it.startsWith("#")) {
                         val n = it.trim()
                         when {
-                            n.endsWith("!") -> {
-                                val pkg = n.removeSuffix("!").trim()
-                                generatePackages.add(pkg)
-                                packageModes[pkg] = Mode.GENERATE
-                            }
-                            n.endsWith("?") -> {
-                                val pkg = n.removeSuffix("?").trim()
-                                hackPackages.add(pkg)
-                                packageModes[pkg] = Mode.LEAF_HACK
-                            }
-                            else -> {
-                                // Auto mode
-                                packageModes[n] = Mode.AUTO
-                            }
+                            n.endsWith("!") -> modes[n.removeSuffix("!").trim()] = Mode.GENERATE
+                            n.endsWith("?") -> modes[n.removeSuffix("?").trim()] = Mode.LEAF_HACK
+                            else -> modes[n] = Mode.AUTO
                         }
                     }
                 }
-                Log.i(TAG, "update hack packages: $hackPackages, generate packages=$generatePackages, packageModes=$packageModes")
+                packageModes = modes
+                Log.i(TAG, "update target packages: $modes")
             }
             .onFailure { Log.e(TAG, "failed to update target files", it) }
 
