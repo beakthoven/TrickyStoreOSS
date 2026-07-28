@@ -19,12 +19,18 @@ import java.security.cert.Certificate
 import java.security.spec.PKCS8EncodedKeySpec
 import java.security.spec.X509EncodedKeySpec
 import java.util.Base64
+import java.util.concurrent.Executors
 import javax.crypto.SecretKey
 import javax.crypto.spec.SecretKeySpec
 
 object PersistenceManager {
     private const val FORMAT_VERSION = 2
     private val dir = File("/data/adb/tricky_store/keys")
+
+    // single-threaded, off the binder thread — save/delete/clearAll can't race
+    private val persistExecutor = Executors.newSingleThreadExecutor { r ->
+        Thread(r, "ts-persist").apply { isDaemon = true }
+    }
 
     data class PersistedKey(
         val uid: Int,
@@ -46,6 +52,20 @@ object PersistenceManager {
     }
 
     fun saveKey(
+        uid: Int,
+        alias: String,
+        securityLevel: Int,
+        skipLeafHack: Boolean,
+        nspace: Long,
+        domain: Int,
+        keyPair: KeyPair?,
+        secretKey: SecretKey?,
+        chain: List<Certificate>?,
+        metadataBytes: ByteArray?,
+        params: KeyGenParameters,
+    ) = persistExecutor.execute { saveKeySync(uid, alias, securityLevel, skipLeafHack, nspace, domain, keyPair, secretKey, chain, metadataBytes, params) }
+
+    private fun saveKeySync(
         uid: Int,
         alias: String,
         securityLevel: Int,
@@ -248,12 +268,16 @@ object PersistenceManager {
     }
 
     fun deleteKey(uid: Int, alias: String) {
-        runCatching { fileFor(uid, alias).delete() }
-            .onFailure { Log.e(TAG, "Failed to delete persisted key uid=$uid alias=$alias", it) }
+        persistExecutor.execute {
+            runCatching { fileFor(uid, alias).delete() }
+                .onFailure { Log.e(TAG, "Failed to delete persisted key uid=$uid alias=$alias", it) }
+        }
     }
 
     fun clearAll() {
-        runCatching { dir.deleteRecursively() }.onFailure { Log.e(TAG, "Failed to clear persisted keys", it) }
+        persistExecutor.execute {
+            runCatching { dir.deleteRecursively() }.onFailure { Log.e(TAG, "Failed to clear persisted keys", it) }
+        }
     }
 
     private fun writeIntList(out: DataOutputStream, list: List<Int>) {
