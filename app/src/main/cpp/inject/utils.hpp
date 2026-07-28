@@ -64,18 +64,6 @@ uintptr_t remote_post_call(int pid, struct user_regs_struct &regs, uintptr_t exp
 bool wait_for_trace(int pid, int *status, int flags);
 std::string parse_status(int status);
 void *find_module_return_addr(const std::vector<lsplt::MapInfo> &map_info, std::string_view module_suffix);
-std::vector<std::string> get_cmdline(int pid);
-std::string parse_exec(int pid);
-bool skip_syscall(int pid);
-bool do_syscall(int pid, uintptr_t &ret, int nr, uintptr_t arg0 = 0, uintptr_t arg1 = 0, uintptr_t arg2 = 0, uintptr_t arg3 = 0,
-                uintptr_t arg4 = 0, uintptr_t arg5 = 0);
-
-uintptr_t remote_mmap(int pid, uintptr_t addr, size_t size, int prot, int flags, int fd, off_t offset);
-bool remote_munmap(int pid, uintptr_t addr, size_t size);
-int remote_open(int pid, uintptr_t path_addr, int flags);
-bool remote_close(int pid, int fd);
-int wait_for_child(int pid);
-int get_elf_class(std::string_view path);
 
 constexpr size_t kMainMagicLength = 16;
 std::string generateMagic(size_t length);
