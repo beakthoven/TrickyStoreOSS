@@ -17,10 +17,14 @@ import io.github.beakthoven.TrickyStoreOSS.interceptors.SecurityLevelInterceptor
 import android.util.Log
 import io.github.beakthoven.TrickyStoreOSS.logging.TAG
 import java.io.File
+import java.util.concurrent.ConcurrentHashMap
 
 object PkgConfig {
     // volatile immutable map; swapped on reload so binder threads read a consistent snapshot
     @Volatile private var packageModes: Map<String, Mode> = emptyMap()
+
+    // UID-package set cache
+    private val uidPackages = ConcurrentHashMap<Int, Array<String>>()
 
     enum class Mode {
         AUTO,
@@ -128,6 +132,7 @@ object PkgConfig {
             override fun binderDied() {
                 (iPm as? IInterface)?.asBinder()?.unlinkToDeath(this, 0)
                 iPm = null
+                uidPackages.clear()
             }
         }
 
@@ -143,7 +148,10 @@ object PkgConfig {
     private fun checkNeed(callingUid: Int, targetMode: Mode, autoPredicate: Boolean): Boolean =
         kotlin
             .runCatching {
-                val ps = getPm()?.getPackagesForUid(callingUid) ?: return false
+                val ps = uidPackages.getOrPut(callingUid) {
+                    // PM gone: don't cache, so the next call retries
+                    getPm()?.getPackagesForUid(callingUid) ?: return false
+                }
                 if (teeBroken == null) loadTEEStatus(root)
                 for (pkg in ps) {
                     when (packageModes[pkg]) {
