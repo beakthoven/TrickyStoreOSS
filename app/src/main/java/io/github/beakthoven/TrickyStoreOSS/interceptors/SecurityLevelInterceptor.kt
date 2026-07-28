@@ -70,69 +70,32 @@ class SecurityLevelInterceptor(private val original: IKeystoreSecurityLevel, pri
         @Keep fun getKeyPairs(uid: Int, alias: String): Pair<KeyPair, List<Certificate>>? = keyPairs[Key(uid, alias)]
 
         @Keep
-        fun findGeneratedKeyByKeyId(uid: Int, nspace: Long): Info? {
-            val k = keysByNspace[nspace] ?: return null
-            return if (k.uid == uid) keys[k] else null
-        }
-
-        @Keep
         fun findAliasForNspace(uid: Int, nspace: Long): String? {
             val key = keysByNspace[nspace]?.takeIf { it.uid == uid } ?: return null
             return key.alias
         }
 
-        @Keep
-        fun findGeneratedKey(uid: Int, descriptor: KeyDescriptor): Info? {
+        private fun resolveOwnerKeys(uid: Int, descriptor: KeyDescriptor): List<Key> {
+            val candidates = ArrayList<Key>(3)
             if (descriptor.nspace != 0L) {
-                findGeneratedKeyByKeyId(uid, descriptor.nspace)?.let {
-                    return it
-                }
-                grants[descriptor.nspace]
-                    ?.takeIf { it.granteeUid == uid }
-                    ?.let { g ->
-                        keys[g.key]?.let {
-                            return it
-                        }
-                    }
+                keysByNspace[descriptor.nspace]?.takeIf { it.uid == uid }?.let { candidates.add(it) }
+                grants[descriptor.nspace]?.takeIf { it.granteeUid == uid }?.let { candidates.add(it.key) }
             }
-            return descriptor.alias?.let { keys[Key(uid, it)] }
+            descriptor.alias?.let { candidates.add(Key(uid, it)) }
+            return candidates
         }
 
         @Keep
-        fun resolvePatchedResponse(uid: Int, descriptor: KeyDescriptor): KeyEntryResponse? {
-            if (descriptor.nspace != 0L) {
-                keysByNspace[descriptor.nspace]
-                    ?.takeIf { it.uid == uid }
-                    ?.let {
-                        return patchedResponses[it]
-                    }
-                grants[descriptor.nspace]
-                    ?.takeIf { it.granteeUid == uid }
-                    ?.let { g ->
-                        patchedResponses[g.key]?.let {
-                            return it
-                        }
-                    }
-            }
-            return descriptor.alias?.let { patchedResponses[Key(uid, it)] }
-        }
+        fun findGeneratedKey(uid: Int, descriptor: KeyDescriptor): Info? =
+            resolveOwnerKeys(uid, descriptor).firstNotNullOfOrNull { keys[it] }
 
         @Keep
-        fun shouldSkipLeafHackFor(uid: Int, descriptor: KeyDescriptor): Boolean {
-            if (descriptor.nspace != 0L) {
-                keysByNspace[descriptor.nspace]
-                    ?.takeIf { it.uid == uid }
-                    ?.let {
-                        return skipLeafHacks[it] ?: false
-                    }
-                grants[descriptor.nspace]
-                    ?.takeIf { it.granteeUid == uid }
-                    ?.let { g ->
-                        return skipLeafHacks[g.key] ?: false
-                    }
-            }
-            return descriptor.alias?.let { skipLeafHacks[Key(uid, it)] } ?: false
-        }
+        fun resolvePatchedResponse(uid: Int, descriptor: KeyDescriptor): KeyEntryResponse? =
+            resolveOwnerKeys(uid, descriptor).firstNotNullOfOrNull { patchedResponses[it] }
+
+        @Keep
+        fun shouldSkipLeafHackFor(uid: Int, descriptor: KeyDescriptor): Boolean =
+            resolveOwnerKeys(uid, descriptor).firstNotNullOfOrNull { skipLeafHacks[it] } ?: false
 
         @Keep val grants = ConcurrentHashMap<Long, GrantInfo>()
 
