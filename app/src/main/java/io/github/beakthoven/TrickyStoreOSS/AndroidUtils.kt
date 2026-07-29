@@ -9,10 +9,10 @@ import android.os.Build
 import android.os.SystemProperties
 import android.security.KeyStore2
 import android.security.keystore.KeyStoreManager
+import android.util.Log
 import io.github.beakthoven.TrickyStoreOSS.AttestUtils.CachedAttestData
 import io.github.beakthoven.TrickyStoreOSS.config.CustomPatchLevel
 import io.github.beakthoven.TrickyStoreOSS.config.PkgConfig
-import android.util.Log
 import io.github.beakthoven.TrickyStoreOSS.logging.TAG
 import java.io.File
 import java.security.MessageDigest
@@ -27,7 +27,9 @@ object AndroidUtils {
             ?: CachedAttestData?.verifiedBootKey?.takeIfNonZero()?.also {
                 Log.d(TAG, "Using boot key from cached TEE attestation: ${it.toHex()}")
             }
-            ?: persistedBootKey().also { Log.d(TAG, "Using persisted random boot key (no AVB key available): ${it.toHex()}") }
+            ?: persistedBootKey().also {
+                Log.d(TAG, "Using persisted random boot key (no AVB key available): ${it.toHex()}")
+            }
     }
 
     private fun ByteArray.takeIfNonZero(): ByteArray? = takeIf { isNotEmpty() && any { it != 0.toByte() } }
@@ -199,17 +201,17 @@ object AndroidUtils {
     val keymasterVersion: Int
         get() = CachedAttestData?.keymasterVersion ?: if (attestVersion == 4) 41 else attestVersion
 
-    fun String.convertPatchLevel(isLong: Boolean): Int =
-        runCatching {
-                val parts = split("-")
-                when {
-                    isLong && parts.size >= 3 -> parts[0].toInt() * 10000 + parts[1].toInt() * 100 + parts[2].toInt()
-                    parts.size >= 2 -> parts[0].toInt() * 100 + parts[1].toInt()
-                    else -> throw IllegalArgumentException("Invalid patch level format: $this")
-                }
+    fun String.convertPatchLevel(isLong: Boolean): Int {
+        val raw = runCatching {
+            val parts = split("-")
+            when {
+                isLong && parts.size >= 3 -> parts[0].toInt() * 10000 + parts[1].toInt() * 100 + parts[2].toInt()
+                parts.size >= 2 -> parts[0].toInt() * 100 + parts[1].toInt()
+                else -> throw IllegalArgumentException("Invalid patch level format: $this")
             }
-            .onFailure { Log.e(TAG, "Invalid patch level format: $this", it) }
-            .getOrDefault(202404)
+        }
+        return raw.onFailure { Log.e(TAG, "Invalid patch level format: $this", it) }.getOrDefault(202404)
+    }
 
     private val keystore2: KeyStore2 by lazy { KeyStore2.getInstance() }
 
@@ -217,14 +219,12 @@ object AndroidUtils {
         runCatching { keystore2.getSupplementaryAttestationInfo(tag) }.getOrNull()
 
     val moduleHash: ByteArray by lazy {
-        getSupplementaryAttestationInfo(KeyStoreManager.MODULE_HASH)
-            ?.let { MessageDigest.getInstance("SHA-256").digest(it) }
-            ?: CachedAttestData?.moduleHash
-            ?: ByteArray(32).also { Log.e(TAG, "Failed to source module hash") }
+        getSupplementaryAttestationInfo(KeyStoreManager.MODULE_HASH)?.let {
+            MessageDigest.getInstance("SHA-256").digest(it)
+        } ?: CachedAttestData?.moduleHash ?: ByteArray(32).also { Log.e(TAG, "Failed to source module hash") }
     }
 }
 
 fun String.trimLine(): String = trim().split("\n").joinToString("\n") { it.trim() }
 
-@OptIn(ExperimentalStdlibApi::class)
-fun ByteArray.toHex(): String = toHexString(HexFormat.Default)
+@OptIn(ExperimentalStdlibApi::class) fun ByteArray.toHex(): String = toHexString(HexFormat.Default)

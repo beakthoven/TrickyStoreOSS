@@ -6,12 +6,11 @@
 package io.github.beakthoven.TrickyStoreOSS
 
 import android.security.keystore.KeyProperties
+import android.util.Log
 import io.github.beakthoven.TrickyStoreOSS.CertificateGen.KeyBox
 import io.github.beakthoven.TrickyStoreOSS.CertificateHack.clearLeafAlgorithms
-import android.util.Log
 import io.github.beakthoven.TrickyStoreOSS.logging.TAG
 import java.io.StringReader
-import java.security.cert.Certificate
 import java.util.concurrent.ConcurrentHashMap
 import org.xmlpull.v1.XmlPullParser
 import org.xmlpull.v1.XmlPullParserFactory
@@ -30,11 +29,12 @@ object KeyBoxUtils {
             return
         }
 
-        runCatching {
-            val parser = XmlPullParserFactory.newInstance().newPullParser().apply {
-                setFeature(XmlPullParser.FEATURE_PROCESS_NAMESPACES, false)
-                setInput(StringReader(xmlData.trim()))
-            }
+        val raw = runCatching {
+            val parser =
+                XmlPullParserFactory.newInstance().newPullParser().apply {
+                    setFeature(XmlPullParser.FEATURE_PROCESS_NAMESPACES, false)
+                    setInput(StringReader(xmlData.trim()))
+                }
             var keyAlgoAttr: String? = null
             var privateKeyText: String? = null
             val certTexts = ArrayList<String>()
@@ -43,24 +43,27 @@ object KeyBoxUtils {
             var event = parser.eventType
             while (event != XmlPullParser.END_DOCUMENT) {
                 when (event) {
-                    XmlPullParser.START_TAG -> when (parser.name) {
-                        "Key" -> {
-                            keyAlgoAttr = parser.getAttributeValue(null, "algorithm")
-                            privateKeyText = null
-                            certTexts.clear()
+                    XmlPullParser.START_TAG ->
+                        when (parser.name) {
+                            "Key" -> {
+                                keyAlgoAttr = parser.getAttributeValue(null, "algorithm")
+                                privateKeyText = null
+                                certTexts.clear()
+                            }
+                            "PrivateKey" -> privateKeyText = readElementText(parser)
+                            "Certificate" -> readElementText(parser).takeIf { it.isNotBlank() }?.let(certTexts::add)
                         }
-                        "PrivateKey" -> privateKeyText = readElementText(parser)
-                        "Certificate" -> readElementText(parser).takeIf { it.isNotBlank() }?.let(certTexts::add)
-                    }
-                    XmlPullParser.END_TAG -> if (parser.name == "Key") {
-                        storeKeybox(keyAlgoAttr, privateKeyText, certTexts)
-                        keyCount++
-                    }
+                    XmlPullParser.END_TAG ->
+                        if (parser.name == "Key") {
+                            storeKeybox(keyAlgoAttr, privateKeyText, certTexts)
+                            keyCount++
+                        }
                 }
                 event = parser.next()
             }
             Log.i(TAG, "Successfully updated $keyCount keyboxes")
-        }.onFailure { Log.e(TAG, "Error loading XML file (keyboxes cleared)", it) }
+        }
+        raw.onFailure { Log.e(TAG, "Error loading XML file (keyboxes cleared)", it) }
     }
 
     private fun readElementText(parser: XmlPullParser): String {
@@ -71,7 +74,8 @@ object KeyBoxUtils {
             when (ev) {
                 XmlPullParser.START_TAG -> depth++
                 XmlPullParser.END_TAG -> depth--
-                XmlPullParser.TEXT, XmlPullParser.IGNORABLE_WHITESPACE -> parser.text?.let(sb::append)
+                XmlPullParser.TEXT,
+                XmlPullParser.IGNORABLE_WHITESPACE -> parser.text?.let(sb::append)
             }
             if (depth > 0) ev = parser.next()
         }
@@ -81,25 +85,31 @@ object KeyBoxUtils {
     private fun storeKeybox(attrAlgo: String?, privateKeyText: String?, certTexts: List<String>) {
         val pem = privateKeyText
         if (pem.isNullOrBlank()) return
-        runCatching {
+        val raw = runCatching {
             val keyPair = CertificateUtils.convertPemToKeyPair(CertificateUtils.parseKeyPair(pem).getOrThrow())
             val derived = keyPair.private.algorithm
-            val algorithmName = when (derived.uppercase()) {
-                KeyProperties.KEY_ALGORITHM_EC -> KeyProperties.KEY_ALGORITHM_EC
-                KeyProperties.KEY_ALGORITHM_RSA -> KeyProperties.KEY_ALGORITHM_RSA
-                else -> derived
-            }
+            val algorithmName =
+                when (derived.uppercase()) {
+                    KeyProperties.KEY_ALGORITHM_EC -> KeyProperties.KEY_ALGORITHM_EC
+                    KeyProperties.KEY_ALGORITHM_RSA -> KeyProperties.KEY_ALGORITHM_RSA
+                    else -> derived
+                }
             // The AOSP schema uses "ecdsa"/"rsa" as attribute values; Java reports "EC"/"RSA".
-            val attrNormalized = when (attrAlgo?.lowercase()) {
-                "ecdsa" -> KeyProperties.KEY_ALGORITHM_EC
-                "rsa" -> KeyProperties.KEY_ALGORITHM_RSA
-                else -> attrAlgo?.uppercase()
-            }
+            val attrNormalized =
+                when (attrAlgo?.lowercase()) {
+                    "ecdsa" -> KeyProperties.KEY_ALGORITHM_EC
+                    "rsa" -> KeyProperties.KEY_ALGORITHM_RSA
+                    else -> attrAlgo?.uppercase()
+                }
             if (attrNormalized != null && !attrNormalized.equals(derived, ignoreCase = true)) {
-                Log.w(TAG, "Keybox algorithm attribute '$attrAlgo' disagrees with parsed key '$derived'; using parsed key")
+                Log.w(
+                    TAG,
+                    "Keybox algorithm attribute '$attrAlgo' disagrees with parsed key '$derived'; using parsed key",
+                )
             }
             val certs = certTexts.map { CertificateUtils.parseCertificate(it).getOrThrow() }
             keyboxes[algorithmName] = KeyBox(keyPair, certs)
-        }.onFailure { Log.e(TAG, "Error processing keybox (algorithm=$attrAlgo)", it) }
+        }
+        raw.onFailure { Log.e(TAG, "Error processing keybox (algorithm=$attrAlgo)", it) }
     }
 }

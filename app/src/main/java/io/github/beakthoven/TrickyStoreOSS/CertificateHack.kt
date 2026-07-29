@@ -70,7 +70,9 @@ object CertificateHack {
     }
 
     private fun hackLeaf(certificateChain: Array<Certificate>): Array<Certificate> {
-        val leaf = CertificateUtils.certificateFactory.generateCertificate(ByteArrayInputStream(certificateChain[0].encoded)) as X509Certificate
+        val leaf =
+            CertificateUtils.certificateFactory.generateCertificate(ByteArrayInputStream(certificateChain[0].encoded))
+                as X509Certificate
         val leafHolder = X509CertificateHolder(leaf.encoded)
         val extension = leafHolder.getExtension(ATTESTATION_OID) ?: return certificateChain
         val encodables = ASN1Sequence.getInstance(extension.extnValue.octets).toArray()
@@ -118,7 +120,9 @@ object CertificateHack {
         certs.addFirst(
             JcaX509CertificateConverter()
                 .getCertificate(
-                    builder.build(JcaContentSignerBuilder("${leafDigest}with$keyboxSignerAlgo").build(keybox.keyPair.private))
+                    builder.build(
+                        JcaContentSignerBuilder("${leafDigest}with$keyboxSignerAlgo").build(keybox.keyPair.private)
+                    )
                 )
         )
         return certs.toTypedArray()
@@ -154,7 +158,9 @@ object CertificateHack {
     fun hackUserCertificate(certificate: ByteArray?, alias: String, uid: Int): ByteArray {
         if (certificate == null) throw UnsupportedOperationException("Leaf certificate is null!")
         return try {
-            val leaf = CertificateUtils.certificateFactory.generateCertificate(ByteArrayInputStream(certificate)) as X509Certificate
+            val leaf =
+                CertificateUtils.certificateFactory.generateCertificate(ByteArrayInputStream(certificate))
+                    as X509Certificate
             if (leaf.getExtensionValue(ATTESTATION_OID.id) == null) return certificate
             leafAlgorithms[KeyIdentifier(alias, uid)] = leaf.publicKey.algorithm
             val hacked = hackLeaf(arrayOf(leaf))
@@ -187,7 +193,12 @@ object CertificateHack {
         }
 
         val rootOfTrustElements =
-            arrayOf(DEROctetString(verifiedBootKey), ASN1Boolean.TRUE, ASN1Enumerated(0), DEROctetString(verifiedBootHash))
+            arrayOf(
+                DEROctetString(verifiedBootKey),
+                ASN1Boolean.TRUE,
+                ASN1Enumerated(0),
+                DEROctetString(verifiedBootHash),
+            )
         val hackedRootOfTrust = DERSequence(rootOfTrustElements)
 
         val spoofedTags = setOf(704, 705, 706, 718, 719)

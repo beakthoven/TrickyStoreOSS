@@ -64,8 +64,7 @@ internal class OpRequest(
                         Tag.MAC_LENGTH -> macLength = v.integer
                         Tag.RSA_OAEP_MGF_DIGEST -> mgfDigest = v.digest
                     }
-                } catch (_: Exception) {
-                }
+                } catch (_: Exception) {}
             }
             return OpRequest(purpose, digest, padding, blockMode, nonce, macLength, mgfDigest)
         }
@@ -78,7 +77,8 @@ internal fun authorizeOperation(keyParams: KeyGenParameters, op: OpRequest): Int
     val isAsymmetric = keyParams.algorithm == Algorithm.EC || keyParams.algorithm == Algorithm.RSA
     if (isAsymmetric && (purpose == KeyPurpose.VERIFY || purpose == KeyPurpose.ENCRYPT))
         return KeymasterDefs.KM_ERROR_UNSUPPORTED_PURPOSE
-    if (purpose == KeyPurpose.AGREE_KEY && keyParams.algorithm != Algorithm.EC) return KeymasterDefs.KM_ERROR_UNSUPPORTED_PURPOSE
+    if (purpose == KeyPurpose.AGREE_KEY && keyParams.algorithm != Algorithm.EC)
+        return KeymasterDefs.KM_ERROR_UNSUPPORTED_PURPOSE
     if (purpose !in keyParams.purpose) return KeymasterDefs.KM_ERROR_INCOMPATIBLE_PURPOSE
     val now = System.currentTimeMillis()
     keyParams.activeDateTime?.let { if (now < it) return KeymasterDefs.KM_ERROR_KEY_NOT_YET_VALID }
@@ -86,10 +86,16 @@ internal fun authorizeOperation(keyParams: KeyGenParameters, op: OpRequest): Int
         keyParams.originationExpireDateTime?.let { if (now > it) return KeymasterDefs.KM_ERROR_KEY_EXPIRED }
     if (purpose == KeyPurpose.DECRYPT || purpose == KeyPurpose.VERIFY)
         keyParams.usageExpireDateTime?.let { if (now > it) return KeymasterDefs.KM_ERROR_KEY_EXPIRED }
-    if (op.nonce != null && (purpose == KeyPurpose.ENCRYPT || purpose == KeyPurpose.SIGN) && keyParams.callerNonce != true)
+    if (
+        op.nonce != null &&
+            (purpose == KeyPurpose.ENCRYPT || purpose == KeyPurpose.SIGN) &&
+            keyParams.callerNonce != true
+    )
         return KeymasterDefs.KM_ERROR_CALLER_NONCE_PROHIBITED
-    if (keyParams.digest.isNotEmpty() && op.digest !in keyParams.digest) return KeymasterDefs.KM_ERROR_UNSUPPORTED_DIGEST
-    if (keyParams.padding.isNotEmpty() && op.padding !in keyParams.padding) return KeymasterDefs.KM_ERROR_UNSUPPORTED_PADDING_MODE
+    if (keyParams.digest.isNotEmpty() && op.digest !in keyParams.digest)
+        return KeymasterDefs.KM_ERROR_UNSUPPORTED_DIGEST
+    if (keyParams.padding.isNotEmpty() && op.padding !in keyParams.padding)
+        return KeymasterDefs.KM_ERROR_UNSUPPORTED_PADDING_MODE
     if (keyParams.blockMode.isNotEmpty() && op.blockMode !in keyParams.blockMode)
         return KeymasterDefs.KM_ERROR_UNSUPPORTED_BLOCK_MODE
     val effectiveMgfDigest = if (op.mgfDigest != 0) op.mgfDigest else KeymasterDefs.KM_DIGEST_SHA1
@@ -121,7 +127,10 @@ private class SignatureEngine(private val signature: Signature, private val veri
         if (data != null) this.signature.update(data)
         return if (verify) {
             if (signature == null || !this.signature.verify(signature))
-                throw ServiceSpecificException(KeymasterDefs.KM_ERROR_VERIFICATION_FAILED, "Signature verification failed")
+                throw ServiceSpecificException(
+                    KeymasterDefs.KM_ERROR_VERIFICATION_FAILED,
+                    "Signature verification failed",
+                )
             null
         } else {
             this.signature.sign()
@@ -222,9 +231,15 @@ private constructor(
             } catch (e: ServiceSpecificException) {
                 throw e
             } catch (e: AEADBadTagException) {
-                throw ServiceSpecificException(KeymasterDefs.KM_ERROR_VERIFICATION_FAILED, "GCM tag verification failed")
+                throw ServiceSpecificException(
+                    KeymasterDefs.KM_ERROR_VERIFICATION_FAILED,
+                    "GCM tag verification failed",
+                )
             } catch (e: Throwable) {
-                throw ServiceSpecificException(KeymasterDefs.KM_ERROR_VERIFICATION_FAILED, e.message ?: "operation failed")
+                throw ServiceSpecificException(
+                    KeymasterDefs.KM_ERROR_VERIFICATION_FAILED,
+                    e.message ?: "operation failed",
+                )
             } finally {
                 active = false
             }
@@ -234,7 +249,10 @@ private constructor(
 
     private fun checkActive() {
         if (!active)
-            throw ServiceSpecificException(KeymasterDefs.KM_ERROR_INVALID_OPERATION_HANDLE, "Operation is no longer active")
+            throw ServiceSpecificException(
+                KeymasterDefs.KM_ERROR_INVALID_OPERATION_HANDLE,
+                "Operation is no longer active",
+            )
     }
 
     private fun checkInput(data: ByteArray?) {
@@ -265,8 +283,12 @@ private constructor(
             val purpose =
                 op.purpose.takeIf { it >= 0 }
                     ?: p.purpose.firstOrNull()
-                    ?: throw ServiceSpecificException(KeymasterDefs.KM_ERROR_INVALID_ARGUMENT, "No key purpose specified")
-            val digest = op.digest.takeIf { it != 0 } ?: p.digest.firstOrNull { it != 0 } ?: KeymasterDefs.KM_DIGEST_SHA_2_256
+                    ?: throw ServiceSpecificException(
+                        KeymasterDefs.KM_ERROR_INVALID_ARGUMENT,
+                        "No key purpose specified",
+                    )
+            val digest =
+                op.digest.takeIf { it != 0 } ?: p.digest.firstOrNull { it != 0 } ?: KeymasterDefs.KM_DIGEST_SHA_2_256
             val padding = op.padding.takeIf { it != 0 } ?: p.padding.firstOrNull()
             val blockMode = op.blockMode.takeIf { it != 0 } ?: p.blockMode.firstOrNull()
             val engine: OpEngine =
@@ -308,9 +330,12 @@ private constructor(
                                     true,
                                 )
                             KeyPurpose.AGREE_KEY ->
-                                KeyAgreementEngine(KeyAgreement.getInstance("ECDH").apply { init(info.keyPair!!.private) })
+                                KeyAgreementEngine(
+                                    KeyAgreement.getInstance("ECDH").apply { init(info.keyPair!!.private) }
+                                )
                             KeyPurpose.ENCRYPT,
-                            KeyPurpose.DECRYPT -> CipherEngine(buildCipher(p, op, digest, padding, blockMode, info, purpose))
+                            KeyPurpose.DECRYPT ->
+                                CipherEngine(buildCipher(p, op, digest, padding, blockMode, info, purpose))
                             else ->
                                 throw ServiceSpecificException(
                                     KeymasterDefs.KM_ERROR_UNSUPPORTED_PURPOSE,
@@ -320,7 +345,8 @@ private constructor(
                     Algorithm.AES ->
                         when (purpose) {
                             KeyPurpose.ENCRYPT,
-                            KeyPurpose.DECRYPT -> CipherEngine(buildCipher(p, op, digest, padding, blockMode, info, purpose))
+                            KeyPurpose.DECRYPT ->
+                                CipherEngine(buildCipher(p, op, digest, padding, blockMode, info, purpose))
                             else ->
                                 throw ServiceSpecificException(
                                     KeymasterDefs.KM_ERROR_UNSUPPORTED_PURPOSE,
@@ -377,7 +403,10 @@ private constructor(
                     Algorithm.RSA -> "RSA"
                     Algorithm.AES -> "AES"
                     else ->
-                        throw ServiceSpecificException(KeymasterDefs.KM_ERROR_UNSUPPORTED_PURPOSE, "Unsupported cipher algorithm")
+                        throw ServiceSpecificException(
+                            KeymasterDefs.KM_ERROR_UNSUPPORTED_PURPOSE,
+                            "Unsupported cipher algorithm",
+                        )
                 }
             val mode =
                 when (blockMode) {
@@ -400,9 +429,15 @@ private constructor(
             return Cipher.getInstance("$keyAlgo/$mode/$pad").apply {
                 val spec: java.security.spec.AlgorithmParameterSpec? =
                     when {
-                        blockMode == KeymasterDefs.KM_MODE_GCM -> GCMParameterSpec(op.macLength ?: 128, op.nonce ?: ByteArray(12))
+                        blockMode == KeymasterDefs.KM_MODE_GCM ->
+                            GCMParameterSpec(op.macLength ?: 128, op.nonce ?: ByteArray(12))
                         padding == KeymasterDefs.KM_PAD_RSA_OAEP ->
-                            OAEPParameterSpec(CertificateUtils.digestName(digest, true), "MGF1", mgf1ParameterSpec(op.mgfDigest), PSource.PSpecified.DEFAULT)
+                            OAEPParameterSpec(
+                                CertificateUtils.digestName(digest, true),
+                                "MGF1",
+                                mgf1ParameterSpec(op.mgfDigest),
+                                PSource.PSpecified.DEFAULT,
+                            )
                         op.nonce != null -> IvParameterSpec(op.nonce)
                         else -> null
                     }

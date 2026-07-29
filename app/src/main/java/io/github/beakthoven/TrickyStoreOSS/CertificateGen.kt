@@ -16,9 +16,9 @@ import android.os.ServiceSpecificException
 import android.security.keymaster.KeymasterDefs
 import android.security.keystore.KeyProperties
 import android.system.keystore2.KeyDescriptor
+import android.util.Log
 import io.github.beakthoven.TrickyStoreOSS.config.PkgConfig
 import io.github.beakthoven.TrickyStoreOSS.interceptors.SecurityLevelInterceptor
-import android.util.Log
 import io.github.beakthoven.TrickyStoreOSS.logging.TAG
 import java.io.File
 import java.math.BigInteger
@@ -135,59 +135,59 @@ object CertificateGen {
         }
     }
 
-    fun generateKeyPair(params: KeyGenParameters): KeyPair? =
-        runCatching {
-                when (params.algorithm) {
-                    Algorithm.EC -> {
-                        Log.d(TAG, "Generating EC keypair of size ${params.keySize}")
-                        KeyPairGenerator.getInstance("EC", BouncyCastleProvider.PROVIDER_NAME)
-                            .apply { initialize(ECGenParameterSpec(params.ecCurveName ?: "secp256r1")) }
-                            .generateKeyPair()
-                    }
+    fun generateKeyPair(params: KeyGenParameters): KeyPair? {
+        val raw = runCatching {
+            when (params.algorithm) {
+                Algorithm.EC -> {
+                    Log.d(TAG, "Generating EC keypair of size ${params.keySize}")
+                    KeyPairGenerator.getInstance("EC", BouncyCastleProvider.PROVIDER_NAME)
+                        .apply { initialize(ECGenParameterSpec(params.ecCurveName ?: "secp256r1")) }
+                        .generateKeyPair()
+                }
 
-                    Algorithm.RSA -> {
-                        Log.d(TAG, "Generating RSA keypair of size ${params.keySize}")
-                        KeyPairGenerator.getInstance("RSA", BouncyCastleProvider.PROVIDER_NAME)
-                            .apply { initialize(RSAKeyGenParameterSpec(params.keySize, params.rsaPublicExponent)) }
-                            .generateKeyPair()
-                    }
+                Algorithm.RSA -> {
+                    Log.d(TAG, "Generating RSA keypair of size ${params.keySize}")
+                    KeyPairGenerator.getInstance("RSA", BouncyCastleProvider.PROVIDER_NAME)
+                        .apply { initialize(RSAKeyGenParameterSpec(params.keySize, params.rsaPublicExponent)) }
+                        .generateKeyPair()
+                }
 
-                    else -> {
-                        Log.i(TAG, "Skipping non-EC/non-RSA algorithm: ${params.algorithm}")
-                        null
-                    }
+                else -> {
+                    Log.i(TAG, "Skipping non-EC/non-RSA algorithm: ${params.algorithm}")
+                    null
                 }
             }
-            .onFailure { Log.e(TAG, "Failed to generate key pair", it) }
-            .getOrNull()
+        }
+        return raw.onFailure { Log.e(TAG, "Failed to generate key pair", it) }.getOrNull()
+    }
 
-    fun generateSecretKey(params: KeyGenParameters): javax.crypto.SecretKey? =
-        runCatching {
-                when (params.algorithm) {
-                    Algorithm.AES ->
-                        javax.crypto.KeyGenerator.getInstance("AES")
-                            .apply { init(params.keySize.coerceAtLeast(128)) }
-                            .generateKey()
+    fun generateSecretKey(params: KeyGenParameters): javax.crypto.SecretKey? {
+        val raw = runCatching {
+            when (params.algorithm) {
+                Algorithm.AES ->
+                    javax.crypto.KeyGenerator.getInstance("AES")
+                        .apply { init(params.keySize.coerceAtLeast(128)) }
+                        .generateKey()
 
-                    Algorithm.HMAC -> {
-                        val algo =
-                            when (params.digest.firstOrNull { it != 0 }) {
-                                KeymasterDefs.KM_DIGEST_SHA1 -> "HmacSHA1"
-                                KeymasterDefs.KM_DIGEST_SHA_2_256 -> "HmacSHA256"
-                                KeymasterDefs.KM_DIGEST_SHA_2_384 -> "HmacSHA384"
-                                KeymasterDefs.KM_DIGEST_SHA_2_512 -> "HmacSHA512"
-                                else -> "HmacSHA256"
-                            }
-                        javax.crypto.KeyGenerator.getInstance(algo)
-                            .apply { init(params.keySize.coerceAtLeast(256)) }
-                            .generateKey()
-                    }
-
-                    else -> null
+                Algorithm.HMAC -> {
+                    val algo =
+                        when (params.digest.firstOrNull { it != 0 }) {
+                            KeymasterDefs.KM_DIGEST_SHA1 -> "HmacSHA1"
+                            KeymasterDefs.KM_DIGEST_SHA_2_256 -> "HmacSHA256"
+                            KeymasterDefs.KM_DIGEST_SHA_2_384 -> "HmacSHA384"
+                            KeymasterDefs.KM_DIGEST_SHA_2_512 -> "HmacSHA512"
+                            else -> "HmacSHA256"
+                        }
+                    javax.crypto.KeyGenerator.getInstance(algo)
+                        .apply { init(params.keySize.coerceAtLeast(256)) }
+                        .generateKey()
                 }
+
+                else -> null
             }
-            .onFailure { Log.e(TAG, "Failed to generate secret key", it) }
-            .getOrNull()
+        }
+        return raw.onFailure { Log.e(TAG, "Failed to generate secret key", it) }.getOrNull()
+    }
 
     fun generateKeyPair(
         uid: Int,
@@ -195,31 +195,31 @@ object CertificateGen {
         attestKeyDescriptor: KeyDescriptor?,
         params: KeyGenParameters,
         securityLevel: Int = 1,
-    ): Pair<KeyPair, List<Certificate>>? =
-        runCatching {
-                Log.i(TAG, "Requested KeyPair with alias: ${descriptor.alias}")
-                attestKeyDescriptor?.let { Log.i(TAG, "Requested KeyPair with attestKey: ${it.alias}") }
+    ): Pair<KeyPair, List<Certificate>>? {
+        val raw = runCatching {
+            Log.i(TAG, "Requested KeyPair with alias: ${descriptor.alias}")
+            attestKeyDescriptor?.let { Log.i(TAG, "Requested KeyPair with attestKey: ${it.alias}") }
 
-                val keyPair = generateKeyPair(params) ?: return null
-                val keybox = getKeyboxForAlgorithm(params.algorithm) ?: return null
-                if (keybox.certificates.isEmpty()) {
-                    Log.e(TAG, "Keybox has no certificates")
-                    return null
-                }
-
-                val signing =
-                    attestKeyDescriptor?.let { getAttestationKeyInfo(uid, it) }
-                        ?: (keybox.keyPair to X509CertificateHolder(keybox.certificates[0].encoded).subject)
-
-                val leaf = buildCertificate(keyPair, keybox, params, signing.second, uid, securityLevel, signing.first)
-                val chain = buildList {
-                    add(leaf)
-                    if (attestKeyDescriptor == null) addAll(keybox.certificates)
-                }
-                keyPair to chain
+            val keyPair = generateKeyPair(params) ?: return null
+            val keybox = getKeyboxForAlgorithm(params.algorithm) ?: return null
+            if (keybox.certificates.isEmpty()) {
+                Log.e(TAG, "Keybox has no certificates")
+                return null
             }
-            .onFailure { Log.e(TAG, "Failed to generate key pair with certificates", it) }
-            .getOrNull()
+
+            val signing =
+                attestKeyDescriptor?.let { getAttestationKeyInfo(uid, it) }
+                    ?: (keybox.keyPair to X509CertificateHolder(keybox.certificates[0].encoded).subject)
+
+            val leaf = buildCertificate(keyPair, keybox, params, signing.second, uid, securityLevel, signing.first)
+            val chain = buildList {
+                add(leaf)
+                if (attestKeyDescriptor == null) addAll(keybox.certificates)
+            }
+            keyPair to chain
+        }
+        return raw.onFailure { Log.e(TAG, "Failed to generate key pair with certificates", it) }.getOrNull()
+    }
 
     private fun getKeyboxForAlgorithm(algorithm: Int): KeyBox? {
         val name =
@@ -237,17 +237,19 @@ object CertificateGen {
     }
 
     private fun getAttestationKeyInfo(uid: Int, descriptor: KeyDescriptor): Pair<KeyPair, X500Name> {
-        val alias = descriptor.alias
-            ?: SecurityLevelInterceptor.findAliasForNspace(uid, descriptor.nspace)
-            ?: throw ServiceSpecificException(
-                KeymasterDefs.KM_ERROR_INVALID_ARGUMENT,
-                "Designated attest key not resolvable (nspace=${descriptor.nspace}) for uid $uid",
-            )
-        val keyInfo = SecurityLevelInterceptor.getKeyPairs(uid, alias)
-            ?: throw ServiceSpecificException(
-                KeymasterDefs.KM_ERROR_INVALID_ARGUMENT,
-                "Designated attest key not found for uid $uid alias=$alias",
-            )
+        val alias =
+            descriptor.alias
+                ?: SecurityLevelInterceptor.findAliasForNspace(uid, descriptor.nspace)
+                ?: throw ServiceSpecificException(
+                    KeymasterDefs.KM_ERROR_INVALID_ARGUMENT,
+                    "Designated attest key not resolvable (nspace=${descriptor.nspace}) for uid $uid",
+                )
+        val keyInfo =
+            SecurityLevelInterceptor.getKeyPairs(uid, alias)
+                ?: throw ServiceSpecificException(
+                    KeymasterDefs.KM_ERROR_INVALID_ARGUMENT,
+                    "Designated attest key not found for uid $uid alias=$alias",
+                )
         return keyInfo.first to X509CertificateHolder(keyInfo.second[0].encoded).subject
     }
 
@@ -292,11 +294,14 @@ object CertificateGen {
                         "Unsupported attestation signing key algorithm: ${signingKeyPair.private.algorithm}"
                     )
             }
+        val digestName = CertificateUtils.digestName(params.digest.firstOrNull { it != 0 } ?: 0, false)
         val signer =
-            JcaContentSignerBuilder("${CertificateUtils.digestName(params.digest.firstOrNull { it != 0 } ?: 0, false)}with$signerAlgorithm")
+            JcaContentSignerBuilder("${digestName}with$signerAlgorithm")
                 .setProvider(BouncyCastleProvider.PROVIDER_NAME)
                 .build(signingKeyPair.private)
-        return JcaX509CertificateConverter().setProvider(BouncyCastleProvider.PROVIDER_NAME).getCertificate(builder.build(signer))
+        return JcaX509CertificateConverter()
+            .setProvider(BouncyCastleProvider.PROVIDER_NAME)
+            .getCertificate(builder.build(signer))
     }
 
     private fun resolveEcCurveName(curve: Int, keySize: Int): String =
@@ -306,31 +311,30 @@ object CertificateGen {
             EcCurve.P_256 -> "secp256r1"
             EcCurve.P_384 -> "secp384r1"
             EcCurve.P_521 -> "secp521r1"
-            else -> when (keySize) {
-                224 -> "secp224r1"
-                384 -> "secp384r1"
-                521 -> "secp521r1"
-                else -> "secp256r1"
-            }
+            else ->
+                when (keySize) {
+                    224 -> "secp224r1"
+                    384 -> "secp384r1"
+                    521 -> "secp521r1"
+                    else -> "secp256r1"
+                }
         }
 
-    fun generateChain(uid: Int, params: KeyGenParameters, keyPair: KeyPair, securityLevel: Int = 1): List<ByteArray>? =
-        runCatching {
-                val keybox = getKeyboxForAlgorithm(params.algorithm) ?: return null
-                val issuer = X509CertificateHolder(keybox.certificates[0].encoded).subject
-                val leaf = buildCertificate(keyPair, keybox, params, issuer, uid, securityLevel)
-                buildList {
-                    add(leaf)
-                    addAll(keybox.certificates)
-                }.map { it.encoded }
-            }
-            .onFailure { Log.e(TAG, "Failed to generate certificate chain", it) }
-            .getOrNull()
+    fun generateChain(uid: Int, params: KeyGenParameters, keyPair: KeyPair, securityLevel: Int = 1): List<ByteArray>? {
+        val raw = runCatching {
+            val keybox = getKeyboxForAlgorithm(params.algorithm) ?: return null
+            val issuer = X509CertificateHolder(keybox.certificates[0].encoded).subject
+            val leaf = buildCertificate(keyPair, keybox, params, issuer, uid, securityLevel)
+            (listOf(leaf) + keybox.certificates).map { it.encoded }
+        }
+        return raw.onFailure { Log.e(TAG, "Failed to generate certificate chain", it) }.getOrNull()
+    }
 
     private fun buildAttestExtension(params: KeyGenParameters, uid: Int, securityLevel: Int = 1): Extension {
         val key = AndroidUtils.bootKey
         val hash = AndroidUtils.getBootHashFromProp()
-        val rootOfTrust = DERSequence(arrayOf(DEROctetString(key), ASN1Boolean.TRUE, ASN1Enumerated(0), DEROctetString(hash)))
+        val rootOfTrust =
+            DERSequence(arrayOf(DEROctetString(key), ASN1Boolean.TRUE, ASN1Enumerated(0), DEROctetString(hash)))
         val osVersion = ASN1Integer(AndroidUtils.osVersion.toLong())
         val creationTimeMs = System.currentTimeMillis()
         val creationDateTime = ASN1Integer(creationTimeMs)
@@ -349,7 +353,8 @@ object CertificateGen {
         fun teeTag(tag: Int, v: ASN1Encodable) = tee.add(DERTaggedObject(true, tag, v))
 
         fun teeSet(tag: Int, vs: List<Int>) =
-            vs.takeIf { it.isNotEmpty() }?.let { teeTag(tag, DERSet(it.map { ASN1Integer(it.toLong()) }.toTypedArray())) }
+            vs.takeIf { it.isNotEmpty() }
+                ?.let { teeTag(tag, DERSet(it.map { ASN1Integer(it.toLong()) }.toTypedArray())) }
 
         teeSet(1, params.purpose)
         teeTag(2, ASN1Integer(params.algorithm.toLong()))
@@ -359,7 +364,8 @@ object CertificateGen {
         teeTag(702, origin)
         teeTag(704, rootOfTrust)
         teeTag(705, osVersion)
-        if (AndroidUtils.patchLevel != AndroidUtils.DO_NOT_REPORT) teeTag(706, ASN1Integer(AndroidUtils.patchLevel.toLong()))
+        if (AndroidUtils.patchLevel != AndroidUtils.DO_NOT_REPORT)
+            teeTag(706, ASN1Integer(AndroidUtils.patchLevel.toLong()))
         if (AndroidUtils.vendorPatchLevelLong != AndroidUtils.DO_NOT_REPORT) {
             teeTag(718, ASN1Integer(AndroidUtils.vendorPatchLevelLong.toLong()))
         }
@@ -417,13 +423,7 @@ object CertificateGen {
     // counter advances every ~30 days, so later keys get a different unique_id like real hardware
     private fun computeUniqueId(creationTimeMs: Long, aaidDer: ByteArray): ByteArray {
         val temporalCounter = creationTimeMs / 2592000000L
-        val message =
-            ByteBuffer
-                .allocate(8 + aaidDer.size + 1)
-                .putLong(temporalCounter)
-                .put(aaidDer)
-                .put(0x00)
-                .array()
+        val message = ByteBuffer.allocate(8 + aaidDer.size + 1).putLong(temporalCounter).put(aaidDer).put(0x00).array()
         val mac = Mac.getInstance("HmacSHA256")
         mac.init(SecretKeySpec(hbk, "HmacSHA256"))
         return mac.doFinal(message).copyOf(16)
@@ -445,7 +445,9 @@ object CertificateGen {
                         } else {
                             pm.getPackageInfo(pkg, PackageManager.GET_SIGNING_CERTIFICATES, uid / 100000)
                         }
-                    info.signingInfo?.signingCertificateHistory?.forEach { sig -> signatures.add(md.digest(sig.toByteArray())) }
+                    info.signingInfo?.signingCertificateHistory?.forEach { sig ->
+                        signatures.add(md.digest(sig.toByteArray()))
+                    }
                     info
                 }
                 .map { info ->

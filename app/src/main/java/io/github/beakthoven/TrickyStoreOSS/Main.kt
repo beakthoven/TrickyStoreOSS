@@ -6,10 +6,10 @@
 package io.github.beakthoven.TrickyStoreOSS
 
 import android.os.Build
+import android.util.Log
 import io.github.beakthoven.TrickyStoreOSS.config.PkgConfig
 import io.github.beakthoven.TrickyStoreOSS.interceptors.Keystore2Interceptor
 import io.github.beakthoven.TrickyStoreOSS.interceptors.KeystoreInterceptor
-import android.util.Log
 import io.github.beakthoven.TrickyStoreOSS.logging.TAG
 import java.security.Security
 import org.bouncycastle.jce.provider.BouncyCastleProvider

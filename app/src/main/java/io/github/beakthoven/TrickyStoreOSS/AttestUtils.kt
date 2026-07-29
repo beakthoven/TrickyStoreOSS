@@ -20,7 +20,6 @@ import org.bouncycastle.asn1.ASN1ObjectIdentifier
 import org.bouncycastle.asn1.ASN1OctetString
 import org.bouncycastle.asn1.ASN1Sequence
 import org.bouncycastle.asn1.ASN1TaggedObject
-import org.bouncycastle.asn1.x509.Extension
 import org.bouncycastle.cert.X509CertificateHolder
 
 val ATTESTATION_OID = ASN1ObjectIdentifier("1.3.6.1.4.1.11129.2.1.17")
@@ -102,48 +101,48 @@ object AttestUtils {
 
         return try {
             val leafHolder = X509CertificateHolder(leaf.encoded)
-            val ext: Extension =
-                leafHolder.getExtension(ATTESTATION_OID)
-                    ?: run {
-                        Log.i(TAG, "No attestation extension found on certificate")
-                        return null
-                    }
+            val ext = leafHolder.getExtension(ATTESTATION_OID)
+            if (ext == null) {
+                Log.i(TAG, "No attestation extension found on certificate")
+                return null
+            }
 
             val keyDescriptionSeq = ASN1Sequence.getInstance(ext.extnValue.octets)
             val encodables = keyDescriptionSeq.toArray()
 
-        val attestVersion = ASN1Integer.getInstance(encodables[0]).value.intValueExact()
-        val keymasterVersion = ASN1Integer.getInstance(encodables[2]).value.intValueExact()
-        var attestVerifiedBootKey: ByteArray? = null
-        var attestVerifiedBootHash: ByteArray? = null
-        var attestOSVersion: Int? = null
-        var attestModuleHash: ByteArray? = null
+            val attestVersion = ASN1Integer.getInstance(encodables[0]).value.intValueExact()
+            val keymasterVersion = ASN1Integer.getInstance(encodables[2]).value.intValueExact()
+            var attestVerifiedBootKey: ByteArray? = null
+            var attestVerifiedBootHash: ByteArray? = null
+            var attestOSVersion: Int? = null
+            var attestModuleHash: ByteArray? = null
 
-        val teeEnforced = ASN1Sequence.getInstance(encodables[7])
+            val teeEnforced = ASN1Sequence.getInstance(encodables[7])
 
-        teeEnforced.forEach { element ->
-            val tagged = element as ASN1TaggedObject
-            when (tagged.tagNo) {
-                704 -> { // Parse Root of Trust
-                    val rootOfTrustSeq = ASN1Sequence.getInstance(tagged.baseObject.toASN1Primitive())
-                    if (rootOfTrustSeq.size() >= 4) {
-                        attestVerifiedBootKey = ASN1OctetString.getInstance(rootOfTrustSeq.getObjectAt(0)).octets
-                        attestVerifiedBootHash = ASN1OctetString.getInstance(rootOfTrustSeq.getObjectAt(3)).octets
+            teeEnforced.forEach { element ->
+                val tagged = element as ASN1TaggedObject
+                when (tagged.tagNo) {
+                    704 -> { // Parse Root of Trust
+                        val rootOfTrustSeq = ASN1Sequence.getInstance(tagged.baseObject.toASN1Primitive())
+                        if (rootOfTrustSeq.size() >= 4) {
+                            attestVerifiedBootKey = ASN1OctetString.getInstance(rootOfTrustSeq.getObjectAt(0)).octets
+                            attestVerifiedBootHash = ASN1OctetString.getInstance(rootOfTrustSeq.getObjectAt(3)).octets
+                        }
+                    }
+                    705 -> { // Parse OS Version
+                        attestOSVersion =
+                            ASN1Integer.getInstance(tagged.baseObject.toASN1Primitive()).value.intValueExact()
                     }
                 }
-                705 -> { // Parse OS Version
-                    attestOSVersion = ASN1Integer.getInstance(tagged.baseObject.toASN1Primitive()).value.intValueExact()
+            }
+
+            val softwareEnforced = encodables.getOrNull(6) as? ASN1Sequence
+            softwareEnforced?.forEach { element ->
+                val tagged = element as? ASN1TaggedObject ?: return@forEach
+                if (tagged.tagNo == 724) {
+                    attestModuleHash = ASN1OctetString.getInstance(tagged.baseObject.toASN1Primitive()).octets
                 }
             }
-        }
-
-        val softwareEnforced = encodables.getOrNull(6) as? ASN1Sequence
-        softwareEnforced?.forEach { element ->
-            val tagged = element as? ASN1TaggedObject ?: return@forEach
-            if (tagged.tagNo == 724) {
-                attestModuleHash = ASN1OctetString.getInstance(tagged.baseObject.toASN1Primitive()).octets
-            }
-        }
 
             Log.i(TAG, "Extracted attestationVersion: $attestVersion")
             Log.i(TAG, "Extracted keymasterVersion: $keymasterVersion")

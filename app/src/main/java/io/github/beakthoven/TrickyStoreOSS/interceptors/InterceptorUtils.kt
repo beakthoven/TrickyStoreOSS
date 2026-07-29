@@ -128,7 +128,11 @@ object InterceptorUtils {
         return BinderInterceptor.OverrideReply(resultCode, parcel)
     }
 
-    fun <T : Parcelable?> createTypedObjectReply(obj: T, flags: Int = 0, resultCode: Int = 0): BinderInterceptor.OverrideReply {
+    fun <T : Parcelable?> createTypedObjectReply(
+        obj: T,
+        flags: Int = 0,
+        resultCode: Int = 0,
+    ): BinderInterceptor.OverrideReply {
         val parcel = Parcel.obtain()
         parcel.writeNoException()
         parcel.writeTypedObject(obj, flags)
@@ -157,6 +161,6 @@ object InterceptorUtils {
     }
 
     fun Parcel.hasException(): Boolean {
-        return kotlin.runCatching { readException() }.exceptionOrNull() != null
+        return runCatching { readException() }.exceptionOrNull() != null
     }
 }

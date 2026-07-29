@@ -14,7 +14,8 @@ import io.github.beakthoven.TrickyStoreOSS.logging.TAG
 open class BinderInterceptor : Binder() {
 
     /** Transaction codes to forward to Java hooks; empty intercepts all. */
-    open val interceptedCodes: IntArray get() = IntArray(0)
+    open val interceptedCodes: IntArray
+        get() = IntArray(0)
 
     sealed class Result
 
@@ -77,7 +78,14 @@ open class BinderInterceptor : Binder() {
         }
     }
 
-    open fun onPreTransact(target: IBinder, code: Int, flags: Int, callingUid: Int, callingPid: Int, data: Parcel): Result = Skip
+    open fun onPreTransact(
+        target: IBinder,
+        code: Int,
+        flags: Int,
+        callingUid: Int,
+        callingPid: Int,
+        data: Parcel,
+    ): Result = Skip
 
     open fun onPostTransact(
         target: IBinder,
@@ -157,7 +165,16 @@ open class BinderInterceptor : Binder() {
                     transactionReply
                 } else null
 
-            onPostTransact(target, transactionCode, transactionFlags, callingUid, callingPid, transactionData, reply, resultCode)
+            onPostTransact(
+                target,
+                transactionCode,
+                transactionFlags,
+                callingUid,
+                callingPid,
+                transactionData,
+                reply,
+                resultCode,
+            )
         } catch (e: Throwable) {
             Log.e(TAG, "handlePostTransact exception code=$transactionCode uid=$callingUid", e)
             Skip

@@ -11,10 +11,10 @@ import android.os.FileObserver
 import android.os.IBinder
 import android.os.IInterface
 import android.os.ServiceManager
+import android.util.Log
 import io.github.beakthoven.TrickyStoreOSS.AttestUtils.TEEStatus
 import io.github.beakthoven.TrickyStoreOSS.KeyBoxUtils
 import io.github.beakthoven.TrickyStoreOSS.interceptors.SecurityLevelInterceptor
-import android.util.Log
 import io.github.beakthoven.TrickyStoreOSS.logging.TAG
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
@@ -32,30 +32,32 @@ object PkgConfig {
         GENERATE,
     }
 
-    private fun updateTargetPackages(f: File?) =
-        runCatching {
-                val modes = mutableMapOf<String, Mode>()
-                f?.readLines()?.forEach {
-                    if (it.isNotBlank() && !it.startsWith("#")) {
-                        val n = it.trim()
-                        when {
-                            n.endsWith("!") -> modes[n.removeSuffix("!").trim()] = Mode.GENERATE
-                            n.endsWith("?") -> modes[n.removeSuffix("?").trim()] = Mode.LEAF_HACK
-                            else -> modes[n] = Mode.AUTO
-                        }
+    private fun updateTargetPackages(f: File?) {
+        val raw = runCatching {
+            val modes = mutableMapOf<String, Mode>()
+            f?.readLines()?.forEach {
+                if (it.isNotBlank() && !it.startsWith("#")) {
+                    val n = it.trim()
+                    when {
+                        n.endsWith("!") -> modes[n.removeSuffix("!").trim()] = Mode.GENERATE
+                        n.endsWith("?") -> modes[n.removeSuffix("?").trim()] = Mode.LEAF_HACK
+                        else -> modes[n] = Mode.AUTO
                     }
                 }
-                packageModes = modes
-                Log.i(TAG, "update target packages: $modes")
             }
-            .onFailure { Log.e(TAG, "failed to update target files", it) }
+            packageModes = modes
+            Log.i(TAG, "update target packages: $modes")
+        }
+        raw.onFailure { Log.e(TAG, "failed to update target files", it) }
+    }
 
-    private fun updateKeyBox(f: File?) =
-        runCatching {
-                KeyBoxUtils.readFromXml(f?.readText())
-                SecurityLevelInterceptor.cleanupAll()
-            }
-            .onFailure { Log.e(TAG, "failed to update keybox", it) }
+    private fun updateKeyBox(f: File?) {
+        val raw = runCatching {
+            KeyBoxUtils.readFromXml(f?.readText())
+            SecurityLevelInterceptor.cleanupAll()
+        }
+        raw.onFailure { Log.e(TAG, "failed to update keybox", it) }
+    }
 
     private const val CONFIG_PATH = "/data/adb/tricky_store"
     private const val TARGET_FILE = "target.txt"
@@ -145,25 +147,25 @@ object PkgConfig {
         return iPm
     }
 
-    private fun checkNeed(callingUid: Int, targetMode: Mode, autoPredicate: Boolean): Boolean =
-        kotlin
-            .runCatching {
-                val ps = uidPackages.getOrPut(callingUid) {
+    private fun checkNeed(callingUid: Int, targetMode: Mode, autoPredicate: Boolean): Boolean {
+        val raw = runCatching {
+            val ps =
+                uidPackages.getOrPut(callingUid) {
                     // PM gone: don't cache, so the next call retries
                     getPm()?.getPackagesForUid(callingUid) ?: return false
                 }
-                if (teeBroken == null) loadTEEStatus(root)
-                for (pkg in ps) {
-                    when (packageModes[pkg]) {
-                        targetMode -> return true
-                        Mode.AUTO -> if (autoPredicate) return true
-                        else -> {}
-                    }
+            if (teeBroken == null) loadTEEStatus(root)
+            for (pkg in ps) {
+                when (packageModes[pkg]) {
+                    targetMode -> return true
+                    Mode.AUTO -> if (autoPredicate) return true
+                    else -> {}
                 }
-                return false
             }
-            .onFailure { Log.e(TAG, "failed to get packages", it) }
-            .getOrNull() ?: false
+            return false
+        }
+        return raw.onFailure { Log.e(TAG, "failed to get packages", it) }.getOrNull() ?: false
+    }
 
     fun needHack(callingUid: Int): Boolean = checkNeed(callingUid, Mode.LEAF_HACK, teeBroken == false)
 
@@ -171,40 +173,41 @@ object PkgConfig {
 
     @Volatile var _customPatchLevel: CustomPatchLevel? = null
 
-    fun updatePatchLevel(f: File?) =
-        runCatching {
-                if (f == null || !f.exists()) {
-                    _customPatchLevel = null
-                    return@runCatching
-                }
-                val lines = f.readLines().map { it.trim() }.filter { it.isNotEmpty() && !it.startsWith("#") }
-                if (lines.isEmpty()) {
-                    _customPatchLevel = null
-                    return@runCatching
-                }
-                if (lines.size == 1 && !lines[0].contains("=")) {
-                    _customPatchLevel = CustomPatchLevel(all = lines[0])
-                    return@runCatching
-                }
-                val map = mutableMapOf<String, String>()
-                for (line in lines) {
-                    val idx = line.indexOf('=')
-                    if (idx > 0) {
-                        val key = line.substring(0, idx).trim().lowercase()
-                        val value = line.substring(idx + 1).trim()
-                        map[key] = value
-                    }
-                }
-                val all = map["all"]
-                _customPatchLevel =
-                    CustomPatchLevel(
-                        system = map["system"] ?: all,
-                        vendor = map["vendor"] ?: all,
-                        boot = map["boot"] ?: all,
-                        all = all,
-                    )
+    fun updatePatchLevel(f: File?) {
+        val raw = runCatching {
+            if (f == null || !f.exists()) {
+                _customPatchLevel = null
+                return@runCatching
             }
-            .onFailure { Log.e(TAG, "failed to update patch level", it) }
+            val lines = f.readLines().map { it.trim() }.filter { it.isNotEmpty() && !it.startsWith("#") }
+            if (lines.isEmpty()) {
+                _customPatchLevel = null
+                return@runCatching
+            }
+            if (lines.size == 1 && !lines[0].contains("=")) {
+                _customPatchLevel = CustomPatchLevel(all = lines[0])
+                return@runCatching
+            }
+            val map = mutableMapOf<String, String>()
+            for (line in lines) {
+                val idx = line.indexOf('=')
+                if (idx > 0) {
+                    val key = line.substring(0, idx).trim().lowercase()
+                    val value = line.substring(idx + 1).trim()
+                    map[key] = value
+                }
+            }
+            val all = map["all"]
+            _customPatchLevel =
+                CustomPatchLevel(
+                    system = map["system"] ?: all,
+                    vendor = map["vendor"] ?: all,
+                    boot = map["boot"] ?: all,
+                    all = all,
+                )
+        }
+        raw.onFailure { Log.e(TAG, "failed to update patch level", it) }
+    }
 
     private fun waitAndGetSystemService(name: String): IBinder? {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {

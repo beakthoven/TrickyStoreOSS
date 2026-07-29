@@ -37,14 +37,15 @@ object CertificateUtils {
     }
 
     fun digestName(digest: Int, hyphenated: Boolean): String {
-        val suffix = when (digest) {
-            KeymasterDefs.KM_DIGEST_SHA1 -> "1"
-            KeymasterDefs.KM_DIGEST_SHA_2_224 -> "224"
-            KeymasterDefs.KM_DIGEST_SHA_2_256 -> "256"
-            KeymasterDefs.KM_DIGEST_SHA_2_384 -> "384"
-            KeymasterDefs.KM_DIGEST_SHA_2_512 -> "512"
-            else -> "256"
-        }
+        val suffix =
+            when (digest) {
+                KeymasterDefs.KM_DIGEST_SHA1 -> "1"
+                KeymasterDefs.KM_DIGEST_SHA_2_224 -> "224"
+                KeymasterDefs.KM_DIGEST_SHA_2_256 -> "256"
+                KeymasterDefs.KM_DIGEST_SHA_2_384 -> "384"
+                KeymasterDefs.KM_DIGEST_SHA_2_512 -> "512"
+                else -> "256"
+            }
         return if (hyphenated) "SHA-$suffix" else "SHA$suffix"
     }
 
@@ -71,15 +72,15 @@ object CertificateUtils {
         } ?: emptyList()
     }
 
-    fun Collection<Certificate>.toByteArray(): ByteArray? =
-        runCatching {
-                ByteArrayOutputStream().use { outputStream ->
-                    forEach { cert -> outputStream.write(cert.encoded) }
-                    outputStream.toByteArray()
-                }
+    fun Collection<Certificate>.toByteArray(): ByteArray? {
+        val raw = runCatching {
+            ByteArrayOutputStream().use { outputStream ->
+                forEach { cert -> outputStream.write(cert.encoded) }
+                outputStream.toByteArray()
             }
-            .onFailure { Log.w(TAG, "Failed to convert certificates to byte array", it) }
-            .getOrNull()
+        }
+        return raw.onFailure { Log.w(TAG, "Failed to convert certificates to byte array", it) }.getOrNull()
+    }
 
     fun KeyEntryResponse?.getCertificateChain(): Array<Certificate>? {
         val metadata = this?.metadata ?: return null
@@ -87,22 +88,14 @@ object CertificateUtils {
 
         return when (val chainBytes = metadata.certificateChain) {
             null -> arrayOf(leafCert)
-            else -> {
-                val additionalCerts = chainBytes.toCertificates()
-                buildList {
-                        add(leafCert)
-                        addAll(additionalCerts)
-                    }
-                    .toTypedArray()
-            }
+            else -> (listOf<Certificate>(leafCert) + chainBytes.toCertificates()).toTypedArray()
         }
     }
 
     // Certificate parsing utilities
     fun parseKeyPair(keyContent: String): Result<PEMKeyPair> = runCatching {
         PEMParser(StringReader(keyContent.trimLine())).use { parser ->
-            (parser.readObject() as? PEMKeyPair)
-                ?: throw IllegalStateException("Invalid PEM key pair format")
+            (parser.readObject() as? PEMKeyPair) ?: throw IllegalStateException("Invalid PEM key pair format")
         }
     }
 

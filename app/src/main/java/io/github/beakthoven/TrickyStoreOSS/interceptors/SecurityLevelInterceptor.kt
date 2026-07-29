@@ -19,6 +19,7 @@ import android.system.keystore2.KeyDescriptor
 import android.system.keystore2.KeyEntryResponse
 import android.system.keystore2.KeyMetadata
 import android.system.keystore2.KeyParameters
+import android.util.Log
 import androidx.annotation.Keep
 import io.github.beakthoven.TrickyStoreOSS.AndroidUtils
 import io.github.beakthoven.TrickyStoreOSS.CertificateGen
@@ -30,7 +31,6 @@ import io.github.beakthoven.TrickyStoreOSS.interceptors.InterceptorUtils.errorRe
 import io.github.beakthoven.TrickyStoreOSS.interceptors.InterceptorUtils.getTransactCode
 import io.github.beakthoven.TrickyStoreOSS.interceptors.InterceptorUtils.hasException
 import io.github.beakthoven.TrickyStoreOSS.interceptors.InterceptorUtils.typedReply
-import android.util.Log
 import io.github.beakthoven.TrickyStoreOSS.logging.TAG
 import io.github.beakthoven.TrickyStoreOSS.putCertificateChain
 import java.security.KeyPair
@@ -42,17 +42,18 @@ private const val MAX_ATTESTATION_CHALLENGE_BYTES = 128
 
 private const val KM_ERROR_INVALID_INPUT_LENGTH = -21
 
-class SecurityLevelInterceptor(private val original: IKeystoreSecurityLevel, private val level: Int) : BinderInterceptor() {
+class SecurityLevelInterceptor(private val original: IKeystoreSecurityLevel, private val level: Int) :
+    BinderInterceptor() {
     override val interceptedCodes: IntArray by lazy {
-        intArrayOf(
-            generateKeyTransaction,
-            createOperationTransaction,
-            importKeyTransaction,
-        ).filter { it >= 0 }.toIntArray()
+        intArrayOf(generateKeyTransaction, createOperationTransaction, importKeyTransaction)
+            .filter { it >= 0 }
+            .toIntArray()
     }
+
     companion object {
         private val generateKeyTransaction = getTransactCode(IKeystoreSecurityLevel.Stub::class.java, "generateKey")
-        private val createOperationTransaction = getTransactCode(IKeystoreSecurityLevel.Stub::class.java, "createOperation")
+        private val createOperationTransaction =
+            getTransactCode(IKeystoreSecurityLevel.Stub::class.java, "createOperation")
         private val importKeyTransaction = getTransactCode(IKeystoreSecurityLevel.Stub::class.java, "importKey")
 
         private val secureRandom = SecureRandom()
@@ -92,6 +93,8 @@ class SecurityLevelInterceptor(private val original: IKeystoreSecurityLevel, pri
         @Keep
         fun resolvePatchedResponse(uid: Int, descriptor: KeyDescriptor): KeyEntryResponse? =
             resolveOwnerKeys(uid, descriptor).firstNotNullOfOrNull { patchedResponses[it] }
+
+        @Keep fun isPatchedKey(key: Key): Boolean = keys.containsKey(key) || patchedResponses.containsKey(key)
 
         @Keep
         fun shouldSkipLeafHackFor(uid: Int, descriptor: KeyDescriptor): Boolean =
@@ -164,96 +167,120 @@ class SecurityLevelInterceptor(private val original: IKeystoreSecurityLevel, pri
 
     data class GrantInfo(val ownerUid: Int, val granteeUid: Int, val key: Key, val accessVector: Int = 0)
 
-    override fun onPreTransact(target: IBinder, code: Int, flags: Int, callingUid: Int, callingPid: Int, data: Parcel): Result {
+    override fun onPreTransact(
+        target: IBinder,
+        code: Int,
+        flags: Int,
+        callingUid: Int,
+        callingPid: Int,
+        data: Parcel,
+    ): Result {
         if (code == importKeyTransaction) {
             return if (PkgConfig.needHack(callingUid) || PkgConfig.needGenerate(callingUid)) Continue else Skip
         }
         if (code == generateKeyTransaction) {
             Log.i(TAG, "intercept key gen uid=$callingUid pid=$callingPid")
-            kotlin
-                .runCatching {
-                    data.enforceInterface(IKeystoreSecurityLevel.DESCRIPTOR)
-                    val keyDescriptor = data.readTypedObject(KeyDescriptor.CREATOR) ?: return@runCatching
-                    val attestationKeyDescriptor = data.readTypedObject(KeyDescriptor.CREATOR)
-                    val params = data.createTypedArray(KeyParameter.CREATOR)!!
-                    val aFlags = data.readInt()
-                    val entropy = data.createByteArray()
-                    val kgp = CertificateGen.KeyGenParameters(params)
-                    val challenge = kgp.attestationChallenge
-                    if (challenge != null && challenge.size > MAX_ATTESTATION_CHALLENGE_BYTES) {
-                        Log.i(TAG, 
-                            "Rejecting oversized attestation challenge (${challenge.size}B > $MAX_ATTESTATION_CHALLENGE_BYTES) uid=$callingUid alias=${keyDescriptor.alias}"
-                        )
-                        return errorReply(KM_ERROR_INVALID_INPUT_LENGTH, "Oversized attestation challenge")
-                    }
-                    if (keyDescriptor.alias == null) {
-                        Log.d(TAG, "KeyDescriptor has null alias (KEY_ID domain), passing through to real keystore")
-                        return Skip
-                    }
-                    val hasDeviceIdAttestation = params.any {
-                        it.tag == Tag.ATTESTATION_ID_IMEI || it.tag == Tag.ATTESTATION_ID_MEID ||
-                            it.tag == Tag.ATTESTATION_ID_SERIAL || it.tag == Tag.ATTESTATION_ID_SECOND_IMEI ||
-                            it.tag == Tag.DEVICE_UNIQUE_ATTESTATION
-                    }
-                    // device-ID/attest-key/BYO must be forged — real TEE can't do them; non-target UIDs too, or keystore2 fails with -66
-                    val forceForge = PkgConfig.needGenerate(callingUid) || hasDeviceIdAttestation ||
-                        kgp.purpose.contains(KeyPurpose.ATTEST_KEY) || attestationKeyDescriptor != null
-                    when {
-                        forceForge -> {
-                            val isSymmetric = kgp.algorithm == Algorithm.AES || kgp.algorithm == Algorithm.HMAC
-                            if (isSymmetric) {
-                                val secretKey = CertificateGen.generateSecretKey(kgp) ?: return@runCatching
-                                return storeGeneratedKey(callingUid, keyDescriptor, kgp, null, secretKey, null, false)
-                            }
-                            val pair =
-                                CertificateGen.generateKeyPair(callingUid, keyDescriptor, attestationKeyDescriptor, kgp, level)
-                                    ?: return@runCatching
-                            return storeGeneratedKey(
-                                callingUid, keyDescriptor, kgp, pair.first, null, pair.second, PkgConfig.needHack(callingUid)
-                            )
-                        }
-                        PkgConfig.needHack(callingUid) -> {
-                            skipLeafHacks.remove(Key(callingUid, keyDescriptor.alias))
-                            Log.i(TAG,
-                                "Forwarding non-attestation key to real keystore (post-hook will patch): uid=$callingUid alias=${keyDescriptor.alias}"
-                            )
-                            return Continue
-                        }
-                        else -> return Skip
-                    }
+            val raw = runCatching {
+                data.enforceInterface(IKeystoreSecurityLevel.DESCRIPTOR)
+                val keyDescriptor = data.readTypedObject(KeyDescriptor.CREATOR) ?: return@runCatching
+                val attestationKeyDescriptor = data.readTypedObject(KeyDescriptor.CREATOR)
+                val params = data.createTypedArray(KeyParameter.CREATOR)!!
+                val aFlags = data.readInt()
+                val entropy = data.createByteArray()
+                val kgp = CertificateGen.KeyGenParameters(params)
+                val challenge = kgp.attestationChallenge
+                if (challenge != null && challenge.size > MAX_ATTESTATION_CHALLENGE_BYTES) {
+                    Log.i(
+                        TAG,
+                        "Rejecting oversized attestation challenge (${challenge.size}B > $MAX_ATTESTATION_CHALLENGE_BYTES) uid=$callingUid alias=${keyDescriptor.alias}",
+                    )
+                    return errorReply(KM_ERROR_INVALID_INPUT_LENGTH, "Oversized attestation challenge")
                 }
-                .onFailure { Log.e(TAG, "parse key gen request", it) }
+                if (keyDescriptor.alias == null) {
+                    Log.d(TAG, "KeyDescriptor has null alias (KEY_ID domain), passing through to real keystore")
+                    return Skip
+                }
+                val hasDeviceIdAttestation = params.any {
+                    it.tag == Tag.ATTESTATION_ID_IMEI ||
+                        it.tag == Tag.ATTESTATION_ID_MEID ||
+                        it.tag == Tag.ATTESTATION_ID_SERIAL ||
+                        it.tag == Tag.ATTESTATION_ID_SECOND_IMEI ||
+                        it.tag == Tag.DEVICE_UNIQUE_ATTESTATION
+                }
+                // device-ID/attest-key/BYO must be forged — real TEE can't do them; non-target UIDs too, or
+                // keystore2 fails with -66
+                val forceForge =
+                    PkgConfig.needGenerate(callingUid) ||
+                        hasDeviceIdAttestation ||
+                        kgp.purpose.contains(KeyPurpose.ATTEST_KEY) ||
+                        attestationKeyDescriptor != null
+                when {
+                    forceForge -> {
+                        val isSymmetric = kgp.algorithm == Algorithm.AES || kgp.algorithm == Algorithm.HMAC
+                        if (isSymmetric) {
+                            val secretKey = CertificateGen.generateSecretKey(kgp) ?: return@runCatching
+                            return storeGeneratedKey(callingUid, keyDescriptor, kgp, null, secretKey, null, false)
+                        }
+                        val pair =
+                            CertificateGen.generateKeyPair(
+                                callingUid,
+                                keyDescriptor,
+                                attestationKeyDescriptor,
+                                kgp,
+                                level,
+                            ) ?: return@runCatching
+                        return storeGeneratedKey(
+                            callingUid,
+                            keyDescriptor,
+                            kgp,
+                            pair.first,
+                            null,
+                            pair.second,
+                            PkgConfig.needHack(callingUid),
+                        )
+                    }
+                    PkgConfig.needHack(callingUid) -> {
+                        skipLeafHacks.remove(Key(callingUid, keyDescriptor.alias))
+                        Log.i(
+                            TAG,
+                            "Forwarding non-attestation key to real keystore (post-hook will patch): uid=$callingUid alias=${keyDescriptor.alias}",
+                        )
+                        return Continue
+                    }
+                    else -> return Skip
+                }
+            }
+            raw.onFailure { Log.e(TAG, "parse key gen request", it) }
         }
         if (code == createOperationTransaction) {
-            val result =
-                kotlin
-                    .runCatching {
-                        data.enforceInterface(IKeystoreSecurityLevel.DESCRIPTOR)
-                        val descriptor = data.readTypedObject(KeyDescriptor.CREATOR) ?: return@runCatching null
-                        val info = findGeneratedKey(callingUid, descriptor)
-                        if (info == null) return@runCatching null
-                        val opParams = data.createTypedArray(KeyParameter.CREATOR) ?: emptyArray<KeyParameter>()
-                        val opRequest = OpRequest.parse(opParams)
-                        val errCode = authorizeOperation(info.params, opRequest)
-                        if (errCode != null) {
-                            Log.i(TAG, 
-                                "createOperation rejected for uid=$callingUid alias=${descriptor.alias} nspace=${descriptor.nspace}: KM error $errCode"
-                            )
-                            return@runCatching errorReply(errCode, "Operation not authorized")
-                        }
-                        Log.d(TAG, 
-                            "createOperation: serving software operation for uid=$callingUid alias=${descriptor.alias} nspace=${descriptor.nspace}"
-                        )
-                        val op = SoftwareOperationBinder.create(info, opRequest, resolveKey(callingUid, descriptor))
-                        val response =
-                            CreateOperationResponse().apply {
-                                iOperation = op
-                                parameters = op.beginParameters?.let { KeyParameters().apply { keyParameter = it } }
-                            }
-                        typedReply(response)
+            val raw = runCatching {
+                data.enforceInterface(IKeystoreSecurityLevel.DESCRIPTOR)
+                val descriptor = data.readTypedObject(KeyDescriptor.CREATOR) ?: return@runCatching null
+                val info = findGeneratedKey(callingUid, descriptor)
+                if (info == null) return@runCatching null
+                val opParams = data.createTypedArray(KeyParameter.CREATOR) ?: emptyArray<KeyParameter>()
+                val opRequest = OpRequest.parse(opParams)
+                val errCode = authorizeOperation(info.params, opRequest)
+                if (errCode != null) {
+                    Log.i(
+                        TAG,
+                        "createOperation rejected for uid=$callingUid alias=${descriptor.alias} nspace=${descriptor.nspace}: KM error $errCode",
+                    )
+                    return@runCatching errorReply(errCode, "Operation not authorized")
+                }
+                Log.d(
+                    TAG,
+                    "createOperation: serving software operation for uid=$callingUid alias=${descriptor.alias} nspace=${descriptor.nspace}",
+                )
+                val op = SoftwareOperationBinder.create(info, opRequest, resolveKey(callingUid, descriptor))
+                val response =
+                    CreateOperationResponse().apply {
+                        iOperation = op
+                        parameters = op.beginParameters?.let { KeyParameters().apply { keyParameter = it } }
                     }
-                    .onFailure { Log.e(TAG, "handle createOperation request", it) }
-                    .getOrNull()
+                typedReply(response)
+            }
+            val result = raw.onFailure { Log.e(TAG, "handle createOperation request", it) }.getOrNull()
             if (result != null) return result
         }
         return Skip
@@ -270,46 +297,45 @@ class SecurityLevelInterceptor(private val original: IKeystoreSecurityLevel, pri
         resultCode: Int,
     ): Result {
         if (code == generateKeyTransaction && reply != null && !reply.hasException()) {
-            val result =
-                kotlin
-                    .runCatching {
-                        data.enforceInterface(IKeystoreSecurityLevel.DESCRIPTOR)
-                        val keyDescriptor = data.readTypedObject(KeyDescriptor.CREATOR) ?: return@runCatching null
-                        val metadata = reply.readTypedObject(KeyMetadata.CREATOR) ?: return@runCatching null
-                        val chain =
-                            CertificateUtils.run {
-                                val leaf = metadata.certificate?.toCertificate()
-                                val rest = metadata.certificateChain?.toCertificates() ?: emptyList()
-                                if (leaf == null) null else (listOf<Certificate>(leaf) + rest).toTypedArray()
-                            } ?: return@runCatching null
-                        val patched = CertificateHack.hackCertificateChain(chain)
-                        metadata.putCertificateChain(patched).getOrThrow()
-                        metadata.authorizations = CertificateHack.patchAuthorizations(metadata.authorizations)
-                        val response =
-                            KeyEntryResponse().apply {
-                                this.metadata = metadata
-                                iSecurityLevel = original
-                            }
-                        patchedResponses[Key(callingUid, keyDescriptor.alias)] = response
-                        metadata.key?.nspace?.let { nspace ->
-                            if (nspace != 0L) keysByNspace[nspace] = Key(callingUid, keyDescriptor.alias)
-                        }
-                        Log.i(TAG, "Patched generateKey chain for uid=$callingUid alias=${keyDescriptor.alias}")
-                        typedReply(metadata)
+            val raw = runCatching {
+                data.enforceInterface(IKeystoreSecurityLevel.DESCRIPTOR)
+                val keyDescriptor = data.readTypedObject(KeyDescriptor.CREATOR) ?: return@runCatching null
+                val metadata = reply.readTypedObject(KeyMetadata.CREATOR) ?: return@runCatching null
+                val chain =
+                    with(CertificateUtils) {
+                        val leaf = metadata.certificate?.toCertificate() ?: return@runCatching null
+                        val rest = metadata.certificateChain?.toCertificates() ?: emptyList()
+                        (listOf<Certificate>(leaf) + rest).toTypedArray()
                     }
-                    .onFailure { Log.e(TAG, "patch generateKey reply", it) }
-                    .getOrNull()
+                val patched = CertificateHack.hackCertificateChain(chain)
+                metadata.putCertificateChain(patched).getOrThrow()
+                metadata.authorizations = CertificateHack.patchAuthorizations(metadata.authorizations)
+                val response =
+                    KeyEntryResponse().apply {
+                        this.metadata = metadata
+                        iSecurityLevel = original
+                    }
+                patchedResponses[Key(callingUid, keyDescriptor.alias)] = response
+                metadata.key?.nspace?.let { nspace ->
+                    if (nspace != 0L) keysByNspace[nspace] = Key(callingUid, keyDescriptor.alias)
+                }
+                Log.i(TAG, "Patched generateKey chain for uid=$callingUid alias=${keyDescriptor.alias}")
+                typedReply(metadata)
+            }
+            val result = raw.onFailure { Log.e(TAG, "patch generateKey reply", it) }.getOrNull()
             if (result != null) return result
         }
         if (code == importKeyTransaction && reply != null && !reply.hasException()) {
-            kotlin
-                .runCatching {
-                    data.enforceInterface(IKeystoreSecurityLevel.DESCRIPTOR)
-                    val keyDescriptor = data.readTypedObject(KeyDescriptor.CREATOR) ?: return@runCatching
-                    Log.i(TAG, "importKey succeeded, clearing generated state for uid=$callingUid alias=${keyDescriptor.alias}")
-                    cleanupKey(callingUid, keyDescriptor.alias)
-                }
-                .onFailure { Log.e(TAG, "parse importKey request", it) }
+            val raw = runCatching {
+                data.enforceInterface(IKeystoreSecurityLevel.DESCRIPTOR)
+                val keyDescriptor = data.readTypedObject(KeyDescriptor.CREATOR) ?: return@runCatching
+                Log.i(
+                    TAG,
+                    "importKey succeeded, clearing generated state for uid=$callingUid alias=${keyDescriptor.alias}",
+                )
+                cleanupKey(callingUid, keyDescriptor.alias)
+            }
+            raw.onFailure { Log.e(TAG, "parse importKey request", it) }
         }
         return Skip
     }
@@ -372,7 +398,8 @@ class SecurityLevelInterceptor(private val original: IKeystoreSecurityLevel, pri
         metadata.key = d
         val authorizations = ArrayList<Authorization>()
         fun tee(tag: Int, value: KeyParameterValue) = authorizations.add(auth(tag, value, level))
-        fun sw(tag: Int, value: KeyParameterValue) = authorizations.add(auth(tag, value, 0 /* SoftwareLevel.SOFTWARE */))
+        fun sw(tag: Int, value: KeyParameterValue) =
+            authorizations.add(auth(tag, value, 0 /* SoftwareLevel.SOFTWARE */))
 
         tee(Tag.ALGORITHM, KeyParameterValue.algorithm(params.algorithm))
         for (i in params.purpose) tee(Tag.PURPOSE, KeyParameterValue.keyPurpose(i))
@@ -382,7 +409,8 @@ class SecurityLevelInterceptor(private val original: IKeystoreSecurityLevel, pri
         for (i in params.mgfDigest) tee(Tag.RSA_OAEP_MGF_DIGEST, KeyParameterValue.digest(i))
         tee(Tag.KEY_SIZE, KeyParameterValue.integer(params.keySize))
 
-        if (params.algorithm == Algorithm.EC && params.ecCurve != 0) tee(Tag.EC_CURVE, KeyParameterValue.ecCurve(params.ecCurve))
+        if (params.algorithm == Algorithm.EC && params.ecCurve != 0)
+            tee(Tag.EC_CURVE, KeyParameterValue.ecCurve(params.ecCurve))
         params.rsaPublicExponent?.let { tee(Tag.RSA_PUBLIC_EXPONENT, KeyParameterValue.longInteger(it.toLong())) }
 
         tee(Tag.NO_AUTH_REQUIRED, KeyParameterValue.boolValue(true))
@@ -419,56 +447,58 @@ class SecurityLevelInterceptor(private val original: IKeystoreSecurityLevel, pri
         PersistenceManager.loadAll()
             .filter { it.securityLevel == level }
             .forEach { pk ->
-                runCatching {
-                        val descriptor =
-                            KeyDescriptor().apply {
-                                domain = pk.domain
-                                nspace = pk.nspace
-                                alias = pk.alias
+                val raw = runCatching {
+                    val descriptor =
+                        KeyDescriptor().apply {
+                            domain = pk.domain
+                            nspace = pk.nspace
+                            alias = pk.alias
+                        }
+                    val metadata = pk.metadataBytes?.let { unmarshalKeyMetadata(it) }
+                    val response =
+                        if (metadata != null) {
+                            KeyEntryResponse().apply {
+                                this.metadata = metadata
+                                iSecurityLevel = original
                             }
-                        val metadata = pk.metadataBytes?.let { unmarshalKeyMetadata(it) }
-                        val response =
-                            if (metadata != null) {
-                                KeyEntryResponse().apply {
-                                    this.metadata = metadata
-                                    iSecurityLevel = original
-                                }
-                            } else {
-                                buildResponse(pk.chain, pk.params, descriptor, pk.uid)
-                            }
-                        val key = Key(pk.uid, pk.alias)
-                        keys[key] = Info(pk.keyPair, pk.secretKey, response, pk.params)
-                        if (pk.keyPair != null) keyPairs[key] = Pair(pk.keyPair, pk.chain)
-                        if (pk.nspace != 0L) keysByNspace[pk.nspace] = key
-                        if (pk.skipLeafHack) skipLeafHacks[key] = true
-                        Log.i(TAG, "Restored persisted key uid=${pk.uid} alias=${pk.alias}")
-                    }
-                    .onFailure { Log.e(TAG, "Failed to restore persisted key uid=${pk.uid} alias=${pk.alias}", it) }
+                        } else {
+                            buildResponse(pk.chain, pk.params, descriptor, pk.uid)
+                        }
+                    val key = Key(pk.uid, pk.alias)
+                    keys[key] = Info(pk.keyPair, pk.secretKey, response, pk.params)
+                    if (pk.keyPair != null) keyPairs[key] = Pair(pk.keyPair, pk.chain)
+                    if (pk.nspace != 0L) keysByNspace[pk.nspace] = key
+                    if (pk.skipLeafHack) skipLeafHacks[key] = true
+                    Log.i(TAG, "Restored persisted key uid=${pk.uid} alias=${pk.alias}")
+                }
+                raw.onFailure { Log.e(TAG, "Failed to restore persisted key uid=${pk.uid} alias=${pk.alias}", it) }
             }
     }
 
-    private fun marshalKeyMetadata(metadata: KeyMetadata): ByteArray? =
-        runCatching {
-                val p = Parcel.obtain()
-                try {
-                    p.writeTypedObject(metadata, 0)
-                    p.marshall()
-                } finally {
-                    p.recycle()
-                }
+    private fun marshalKeyMetadata(metadata: KeyMetadata): ByteArray? {
+        val raw = runCatching {
+            val p = Parcel.obtain()
+            try {
+                p.writeTypedObject(metadata, 0)
+                p.marshall()
+            } finally {
+                p.recycle()
             }
-            .getOrNull()
+        }
+        return raw.getOrNull()
+    }
 
-    private fun unmarshalKeyMetadata(bytes: ByteArray): KeyMetadata? =
-        runCatching {
-                val p = Parcel.obtain()
-                try {
-                    p.unmarshall(bytes, 0, bytes.size)
-                    p.setDataPosition(0)
-                    p.readTypedObject(KeyMetadata.CREATOR)
-                } finally {
-                    p.recycle()
-                }
+    private fun unmarshalKeyMetadata(bytes: ByteArray): KeyMetadata? {
+        val raw = runCatching {
+            val p = Parcel.obtain()
+            try {
+                p.unmarshall(bytes, 0, bytes.size)
+                p.setDataPosition(0)
+                p.readTypedObject(KeyMetadata.CREATOR)
+            } finally {
+                p.recycle()
             }
-            .getOrNull()
+        }
+        return raw.getOrNull()
+    }
 }
