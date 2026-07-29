@@ -84,6 +84,15 @@ android {
     buildFeatures {
         prefab = true
     }
+    packaging {
+        resources {
+            pickFirsts += setOf(
+                "META-INF/LICENSE.md",
+                "META-INF/NOTICE.md",
+                "META-INF/INDEX.LIST",
+            )
+        }
+    }
 }
 
 dependencies {
