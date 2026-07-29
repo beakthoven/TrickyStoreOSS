@@ -1,7 +1,7 @@
 [versions]
 agp = "9.2.1"
 annotation = "1.10.0"
-jdk18on = "1.84"
+jdk18on = "1.85"
 libcxx = "29.0.14206865"
 
 [libraries]
