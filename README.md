@@ -1,40 +1,50 @@
-# Tricky Store OSS – A Trick of Keystore They Forgot to Hide
+# Tricky Store OSS
 
-A **FOSS** alternative to the proprietary [TrickyStore](https://github.com/5ec1cff/TrickyStore) Magisk module.  
+*A trick of Keystore they forgot to hide.*
 
-## ❓ Why?
+A fully open-source, FOSS alternative to the proprietary [TrickyStore](https://github.com/5ec1cff/TrickyStore) Magisk module.
 
-We all know about the [multiple violations and questionable practices by the author of TrickyStore](docs/5ec1cff-violations.md).  
-Because of this, I decided to create a **complete rewrite from scratch**, based on:  
+---
 
-- Various projects mentioned in [Acknowledgement](https://github.com/beakthoven/TrickyStoreOSS?tab=readme-ov-file#%EF%B8%8F-acknowledgement) section
-- Official changelogs and expected behavior of newer releases  
-- My own feature additions and fixes that were part of an earlier fork of the older codebase  
+## Why this exists
 
-Tricky Store OSS is **rightfully licensed under GPLv3**, ensuring it stays free and compliant with open-source laws.
+TrickyStore's author has a track record of [violations and questionable practices](docs/5ec1cff-violations.md)
 
-## ✨ Features
+So this is a complete rewrite from scratch, built on:
 
-- 100% **FOSS**
-- Developed to match the proprietary implementation’s behavior and feature set as closely as possible
+- The projects credited in [Acknowledgements](#acknowledgements)
+- Official changelogs and the expected behavior of newer releases
+- Original fixes and features carried over from an earlier fork of the old codebase
 
-## 📱 Requirements
-- Android 10 or above
+Licensed under **GPLv3** and it stays that way.
 
-## 📦 Installtion
+---
 
-1. Flash this module and reboot
-2. (Optional) Place an unrevoked hardware keybox.xml at `/data/adb/tricky_store/keybox.xml` for extended integrity
-3. (Optional) Customize target packages in `/data/adb/tricky_store/target.txt`
-4. (Optional) Customize security patch in `/data/adb/tricky_store/security_patch.txt`
-5. Enjoy!
+## Features
 
+- 100% FOSS, no closed-source components
+- Matches the proprietary implementation's behavior and feature set as closely as possible
 
-**All configuration files will take effect immediately.**
+## Requirements
 
-### keybox.xml
+- Android 10+
 
-format:
+---
+
+## Installation
+
+1. Flash the module and reboot
+2. *(Optional)* Place an unrevoked hardware keybox at `/data/adb/tricky_store/keybox.xml` for extended integrity
+3. *(Optional)* Customize target packages in `/data/adb/tricky_store/target.txt`
+4. *(Optional)* Customize the security patch level in `/data/adb/tricky_store/security_patch.txt`
+
+All config files take effect immediately — no reboot needed after step 1.
+
+---
+
+## Configuration
+
+### `keybox.xml`
 
 ```xml
 <?xml version="1.0"?>
@@ -49,76 +59,72 @@ format:
             </PrivateKey>
             <CertificateChain>
                 <NumberOfCertificates>...</NumberOfCertificates>
-                    <Certificate format="pem">
+                <Certificate format="pem">
 -----BEGIN CERTIFICATE-----
 ...
 -----END CERTIFICATE-----
-                    </Certificate>
-                ... more certificates
+                </Certificate>
+                <!-- more certificates -->
             </CertificateChain>
-        </Key>...
+        </Key>
     </Keybox>
 </AndroidAttestation>
 ```
 
-### Mode configuration
+### `target.txt` — mode selection
 
-Tricky Store OSS supports two modes: leaf certificate hacking and certificate generation.
-On TEE-broken devices, leaf hacking won’t work since the leaf certificate can’t be retrieved from TEE. The module automatically selects the appropriate mode for your device.
+Tricky Store OSS supports two modes: **leaf certificate hacking** and **certificate generation**. On TEE-broken devices, leaf hacking won't work since the leaf certificate can't be retrieved from TEE. The module picks the right mode automatically per device.
 
-You can override this behavior per package:
-- Add ! → Force certificate generation mode
-- Add ? → Force leaf hacking mode
-- No symbol → Automatic mode
+Override per package with a suffix:
 
-For example:
+| Suffix | Behavior |
+|--------|----------|
+| *(none)* | Automatic mode |
+| `?` | Force leaf hacking |
+| `!` | Force certificate generation |
 
 ```
 # target.txt
-# use automatic mode for gsf
-com.google.android.gsf
-# use leaf certificate hacking mode for key attestation App
-io.github.vvb2060.keyattestation?
-# use certificate generating mode for gms
-com.google.android.gms!
+com.google.android.gsf              # automatic
+io.github.vvb2060.keyattestation?   # leaf hacking
+com.google.android.gms!             # certificate generation
 ```
 
-### Customize security patch level 
+### `security_patch.txt` — patch level override
 
-Create the file `/data/adb/tricky_store/security_patch.txt`.
-
-Simple:
+**Simple form** — hacks os/vendor/boot patch level to one value:
 
 ```
-# Hack os/vendor/boot security patch level
 20241101
 ```
 
-Advanced:
+**Advanced form** — per-partition control:
 
 ```
-# os security patch level is 202411
+# system patch level
 system=202411
-# do not hack boot patch level
+# don't touch boot patch level
 boot=no
-# vendor patch level is 20241101 (another format)
+# vendor patch level, alternate date format
 vendor=2024-11-01
-# default value
+# default fallback for unset partitions
 # all=20241101
 # keep consistent with system prop
 # system=prop
 ```
 
-Note: This only affects KeyAttestation results.
-It does not change system properties; use resetprop separately if needed.
+> This only affects KeyAttestation results so it does **not** change system properties. Use `resetprop` separately if you need that.
 
-## 🤝 Contributions
-PRs are welcome. Thank you for supporting true open-source development.
+---
 
-## ❤️ Acknowledgement
+## Contributing
 
-- [BootloaderSpoofer](https://github.com/chiteroman/BootloaderSpoofer) (dead, relied on forks and mirrors)
-- [FrameworkPatch](https://github.com/chiteroman/FrameworkPatch) (dead, relied on forks and mirrors)
+PRs welcome. Thanks for backing real open-source work.
+
+## Acknowledgements
+
+- [BootloaderSpoofer](https://github.com/chiteroman/BootloaderSpoofer) *(dead, relies on forks/mirrors)*
+- [FrameworkPatch](https://github.com/chiteroman/FrameworkPatch) *(dead, relies on forks/mirrors)*
 - [KeyAttestation](https://github.com/vvb2060/KeyAttestation)
 - [KeystoreInjection](https://github.com/aviraxp/Zygisk-KeystoreInjection)
 - [PLTI](https://github.com/PerformanC/PLTI)
