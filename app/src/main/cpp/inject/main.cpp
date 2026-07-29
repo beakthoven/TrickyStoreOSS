@@ -27,7 +27,7 @@
 #include <vector>
 
 #include "logging.hpp"
-#include "lsplt.hpp"
+#include "maps.hpp"
 #include "utils.hpp"
 
 using namespace std::string_literals;
@@ -50,10 +50,10 @@ public:
     ~RemoteLibraryHandle() {
         if (fd_ != -1) {
             struct user_regs_struct regs{};
-            std::vector<lsplt::MapInfo> local_map, remote_map;
+            std::vector<ts::MapInfo> local_map, remote_map;
             if (get_regs(pid_, regs)) {
-                local_map = lsplt::MapInfo::Scan();
-                remote_map = lsplt::MapInfo::Scan(std::to_string(pid_));
+                local_map = ts::MapInfo::Scan();
+                remote_map = ts::MapInfo::Scan(std::to_string(pid_));
                 if (auto close_addr = find_func_addr(local_map, remote_map, constants::kLibcModule, "close")) {
                     std::vector<uintptr_t> args = {static_cast<uintptr_t>(fd_)};
                     remote_call(pid_, regs, reinterpret_cast<uintptr_t>(close_addr), 0, args);
@@ -83,8 +83,8 @@ private:
 };
 
 static std::optional<int> transfer_fd_to_remote(int pid, const char *lib_path, struct user_regs_struct &regs,
-                                                const std::vector<lsplt::MapInfo> &local_map,
-                                                const std::vector<lsplt::MapInfo> &remote_map) {
+                                                const std::vector<ts::MapInfo> &local_map,
+                                                const std::vector<ts::MapInfo> &remote_map) {
     if (!set_sockcreate_con(constants::kSystemFileContext)) {
         LOGE("Failed to set socket creation context");
         return std::nullopt;
@@ -225,8 +225,8 @@ static std::optional<int> transfer_fd_to_remote(int pid, const char *lib_path, s
     return transferred_fd;
 }
 
-static std::string get_remote_dlerror(int pid, struct user_regs_struct &regs, const std::vector<lsplt::MapInfo> &local_map,
-                                     const std::vector<lsplt::MapInfo> &remote_map, uintptr_t libc_return_addr) {
+static std::string get_remote_dlerror(int pid, struct user_regs_struct &regs, const std::vector<ts::MapInfo> &local_map,
+                                     const std::vector<ts::MapInfo> &remote_map, uintptr_t libc_return_addr) {
     auto dlerror_addr = find_func_addr(local_map, remote_map, constants::kLibdlModule, "dlerror");
     if (!dlerror_addr) {
         return "Failed to find dlerror function";
@@ -259,8 +259,8 @@ static std::string get_remote_dlerror(int pid, struct user_regs_struct &regs, co
     return err;
 }
 
-static std::optional<uintptr_t> remote_dlopen(int pid, struct user_regs_struct &regs, const std::vector<lsplt::MapInfo> &local_map,
-                                              const std::vector<lsplt::MapInfo> &remote_map, int lib_fd, const char *lib_path,
+static std::optional<uintptr_t> remote_dlopen(int pid, struct user_regs_struct &regs, const std::vector<ts::MapInfo> &local_map,
+                                              const std::vector<ts::MapInfo> &remote_map, int lib_fd, const char *lib_path,
                                               uintptr_t libc_return_addr) {
     auto dlopen_addr = find_func_addr(local_map, remote_map, constants::kLibdlModule, "android_dlopen_ext");
     if (!dlopen_addr) {
@@ -288,8 +288,8 @@ static std::optional<uintptr_t> remote_dlopen(int pid, struct user_regs_struct &
     return remote_handle;
 }
 
-static std::optional<uintptr_t> remote_find_entry(int pid, struct user_regs_struct &regs, const std::vector<lsplt::MapInfo> &local_map,
-                                                  const std::vector<lsplt::MapInfo> &remote_map, uintptr_t remote_handle,
+static std::optional<uintptr_t> remote_find_entry(int pid, struct user_regs_struct &regs, const std::vector<ts::MapInfo> &local_map,
+                                                  const std::vector<ts::MapInfo> &remote_map, uintptr_t remote_handle,
                                                   uintptr_t libc_return_addr) {
     auto dlsym_addr = find_func_addr(local_map, remote_map, constants::kLibdlModule, "dlsym");
     if (!dlsym_addr) {
@@ -381,8 +381,8 @@ bool inject_library(int pid, const char *lib_path, const char *entry_name) {
     backup_regs = current_regs;
     LOGD("Process stopped and registers backed up");
 
-    auto remote_map = lsplt::MapInfo::Scan(std::to_string(pid));
-    auto local_map = lsplt::MapInfo::Scan();
+    auto remote_map = ts::MapInfo::Scan(std::to_string(pid));
+    auto local_map = ts::MapInfo::Scan();
 
     auto libc_return_addr = find_module_return_addr(remote_map, constants::kLibcModule);
     if (!libc_return_addr) {

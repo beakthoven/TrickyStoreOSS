@@ -121,6 +121,6 @@ PRs are welcome. Thank you for supporting true open-source development.
 - [FrameworkPatch](https://github.com/chiteroman/FrameworkPatch) (dead, relied on forks and mirrors)
 - [KeyAttestation](https://github.com/vvb2060/KeyAttestation)
 - [KeystoreInjection](https://github.com/aviraxp/Zygisk-KeystoreInjection)
-- [LSPlt-JingMatrix](https://github.com/JingMatrix/LSPlt)
+- [PLTI](https://github.com/PerformanC/PLTI)
 - [LSPosed](https://github.com/LSPosed/LSPosed)
 - [PlayIntegrityFork](https://github.com/osm0sis/PlayIntegrityFork)

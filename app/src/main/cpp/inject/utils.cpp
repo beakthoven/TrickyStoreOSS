@@ -151,7 +151,7 @@ bool set_regs(int pid, struct user_regs_struct &regs) {
     return true;
 }
 
-void *find_module_base(const std::vector<lsplt::MapInfo> &map_info, std::string_view module_suffix) {
+void *find_module_base(const std::vector<ts::MapInfo> &map_info, std::string_view module_suffix) {
     for (const auto &map : map_info) {
         if (map.offset == 0 && map.path.ends_with(module_suffix)) {
             LOGV("Found module base for '%.*s' at %p", static_cast<int>(module_suffix.length()), module_suffix.data(),
@@ -164,7 +164,7 @@ void *find_module_base(const std::vector<lsplt::MapInfo> &map_info, std::string_
     return nullptr;
 }
 
-void *find_func_addr(const std::vector<lsplt::MapInfo> &local_map_info, const std::vector<lsplt::MapInfo> &remote_map_info,
+void *find_func_addr(const std::vector<ts::MapInfo> &local_map_info, const std::vector<ts::MapInfo> &remote_map_info,
                      std::string_view module_name, std::string_view function_name) {
     LOGV("Resolving function '%.*s' in module '%.*s'", static_cast<int>(function_name.length()), function_name.data(),
          static_cast<int>(module_name.length()), module_name.data());
@@ -410,41 +410,48 @@ uintptr_t remote_post_call(int pid, struct user_regs_struct &regs, uintptr_t exp
     LOGV("Waiting for remote function call completion");
 
     int status;
-    if (!wait_for_trace(pid, &status, __WALL)) {
-        LOGE("Failed to wait for remote function completion");
-        return 0;
-    }
-
-    if (!get_regs(pid, regs)) {
-        LOGE("Failed to get registers after remote call");
-        return 0;
-    }
-
-    int stop_signal = WSTOPSIG(status);
-    LOGV("Remote function stopped with signal: %s(%d) at address %p", sigabbrev_np(stop_signal), stop_signal,
-         reinterpret_cast<void *>(regs.REG_IP));
-
-    if (stop_signal == SIGSEGV) {
-        if (static_cast<uintptr_t>(regs.REG_IP) != expected_return_addr) {
-            LOGE("Function returned to unexpected address %p (expected %p)", reinterpret_cast<void *>(regs.REG_IP),
-                 reinterpret_cast<void *>(expected_return_addr));
-
-            siginfo_t crash_info;
-            if (ptrace(PTRACE_GETSIGINFO, pid, 0, &crash_info) == 0) {
-                LOGE("Crash details: si_code=%d si_addr=%p", crash_info.si_code, crash_info.si_addr);
-            } else {
-                PLOGE("Failed to get crash signal info");
-            }
+    while (true) {
+        if (!wait_for_trace(pid, &status, __WALL)) {
+            LOGE("Failed to wait for remote function completion");
             return 0;
         }
 
-        uintptr_t return_value = regs.REG_RET;
-        LOGV("Remote function completed with return value: %p", reinterpret_cast<void *>(return_value));
-        return return_value;
-    } else {
-        LOGE("Remote function stopped unexpectedly: %s at address %p", parse_status(status).c_str(),
+        if (!get_regs(pid, regs)) {
+            LOGE("Failed to get registers after remote call");
+            return 0;
+        }
+
+        int stop_signal = WSTOPSIG(status);
+        LOGV("Remote function stopped with signal: %s(%d) at address %p", sigabbrev_np(stop_signal), stop_signal,
              reinterpret_cast<void *>(regs.REG_IP));
-        return 0;
+
+        if (stop_signal == SIGSEGV) {
+            if (static_cast<uintptr_t>(regs.REG_IP) != expected_return_addr) {
+                LOGE("Function returned to unexpected address %p (expected %p)", reinterpret_cast<void *>(regs.REG_IP),
+                     reinterpret_cast<void *>(expected_return_addr));
+
+                siginfo_t crash_info;
+                if (ptrace(PTRACE_GETSIGINFO, pid, 0, &crash_info) == 0) {
+                    LOGE("Crash details: si_code=%d si_addr=%p", crash_info.si_code, crash_info.si_addr);
+                } else {
+                    PLOGE("Failed to get crash signal info");
+                }
+                return 0;
+            }
+
+            uintptr_t return_value = regs.REG_RET;
+            LOGV("Remote function completed with return value: %p", reinterpret_cast<void *>(return_value));
+            return return_value;
+        }
+
+        // Suppress benign signals (SIGCHLD from fork, etc.) and keep waiting
+        // for the expected SIGSEGV at the return address.
+        LOGV("Suppressing %s(%d) during remote call, continuing",
+             sigabbrev_np(stop_signal), stop_signal);
+        if (ptrace(PTRACE_CONT, pid, 0, 0) == -1) {
+            PLOGE("Failed to continue after signal %s(%d)", sigabbrev_np(stop_signal), stop_signal);
+            return 0;
+        }
     }
 }
 
@@ -504,7 +511,7 @@ std::string parse_status(int status) {
     return std::string(status_buf);
 }
 
-void *find_module_return_addr(const std::vector<lsplt::MapInfo> &map_info, std::string_view module_suffix) {
+void *find_module_return_addr(const std::vector<ts::MapInfo> &map_info, std::string_view module_suffix) {
     for (const auto &map : map_info) {
         if ((map.perms & PROT_EXEC) == 0 && map.path.ends_with(module_suffix)) {
             LOGV("Found return address region for '%.*s' at %p", static_cast<int>(module_suffix.length()), module_suffix.data(),

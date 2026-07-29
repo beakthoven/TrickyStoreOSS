@@ -9,13 +9,11 @@ Third-party components:
    The corresponding Apache License 2.0 is provided in:
        app/src/main/cpp/external/AOSP/LICENSE
 
-2. This project includes the LSPlt library as a Git submodule located in:
-       app/src/main/cpp/external/LSPlt/
-   This submodule now uses a fork maintained at:
-        https://github.com/JingMatrix/LSPlt
-   LSPlt is licensed under the GNU Lesser General Public License v3.0 (LGPLv3).
+2. This project includes the PLTI library as a Git submodule located in:
+       app/src/main/cpp/external/PLTI/
+   PLTI is licensed under the BSD 3-Clause License.
    The license can be viewed at:
-       https://github.com/JingMatrix/LSPlt/blob/master/LICENSE
+       https://github.com/PerformanC/PLTI/blob/main/LICENSE
 
 3. Portions of this project include binder header file from the Linux kernel UAPI,
    located in:

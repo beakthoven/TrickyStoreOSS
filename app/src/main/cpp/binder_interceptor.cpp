@@ -21,7 +21,10 @@
 #include <vector>
 
 #include "logging.hpp"
-#include "lsplt.hpp"
+
+extern "C" {
+#include <plti.h>
+}
 
 using namespace android;
 
@@ -476,33 +479,12 @@ status_t BinderInterceptor::validateInterceptorResponse(const Parcel &response, 
 }
 
 namespace {
-constexpr std::string_view kBinderLibraryName = "/libbinder.so";
+constexpr std::string_view kBinderLibraryName = "libbinder.so";
 constexpr std::string_view kIoctlFunctionName = "ioctl";
+struct plti g_plti_ctx;
 } // namespace
 
 bool initializeBinderInterception() {
-    auto memory_maps = lsplt::MapInfo::Scan();
-
-    dev_t binder_device_id;
-    ino_t binder_inode;
-    bool binder_library_found = false;
-
-    for (const auto &memory_map : memory_maps) {
-        if (memory_map.path.ends_with(kBinderLibraryName)) {
-            binder_device_id = memory_map.dev;
-            binder_inode = memory_map.inode;
-            binder_library_found = true;
-            LOGD("Found binder library: %s (dev=0x%lx, inode=%lu)", memory_map.path.c_str(),
-                 static_cast<unsigned long>(binder_device_id), static_cast<unsigned long>(binder_inode));
-            break;
-        }
-    }
-
-    if (!binder_library_found) {
-        LOGE("Failed to locate libbinder.so in process memory maps");
-        return false;
-    }
-
     g_binder_interceptor = sp<BinderInterceptor>::make();
     g_binder_stub = sp<BinderStub>::make();
 
@@ -511,11 +493,19 @@ bool initializeBinderInterception() {
         return false;
     }
 
-    lsplt::RegisterHook(binder_device_id, binder_inode, kIoctlFunctionName.data(),
-                        reinterpret_cast<void *>(intercepted_ioctl_function), reinterpret_cast<void **>(&original_ioctl_function));
+    plti_init(&g_plti_ctx);
 
-    if (!lsplt::CommitHook()) {
-        LOGE("Failed to commit binder ioctl hook");
+    if (!plti_add_lib(&g_plti_ctx, kBinderLibraryName.data())) {
+        LOGE("Failed to find %s via dl_iterate_phdr", kBinderLibraryName.data());
+        g_binder_interceptor.clear();
+        g_binder_stub.clear();
+        return false;
+    }
+
+    if (!plti_add_hook(&g_plti_ctx, kBinderLibraryName.data(), kIoctlFunctionName.data(),
+                       reinterpret_cast<void *>(intercepted_ioctl_function),
+                       reinterpret_cast<void **>(&original_ioctl_function))) {
+        LOGE("Failed to hook %s in %s", kIoctlFunctionName.data(), kBinderLibraryName.data());
         g_binder_interceptor.clear();
         g_binder_stub.clear();
         return false;

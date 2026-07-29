@@ -8,7 +8,7 @@
 #include <map>
 #include <string>
 
-#include "lsplt.hpp"
+#include "maps.hpp"
 
 #define LOG_TAG "TrickyStoreOSS"
 
@@ -49,8 +49,8 @@ ssize_t read_proc(int pid, uintptr_t remote_addr, void *buf, size_t len);
 bool get_regs(int pid, struct user_regs_struct &regs);
 bool set_regs(int pid, struct user_regs_struct &regs);
 
-void *find_module_base(const std::vector<lsplt::MapInfo> &map_info, std::string_view module_suffix);
-void *find_func_addr(const std::vector<lsplt::MapInfo> &local_map_info, const std::vector<lsplt::MapInfo> &remote_map_info,
+void *find_module_base(const std::vector<ts::MapInfo> &map_info, std::string_view module_suffix);
+void *find_func_addr(const std::vector<ts::MapInfo> &local_map_info, const std::vector<ts::MapInfo> &remote_map_info,
                      std::string_view module_name, std::string_view function_name);
 void align_stack(struct user_regs_struct &regs, uintptr_t preserve_bytes = 0);
 uintptr_t push_memory(int pid, struct user_regs_struct &regs, const void *data, size_t length);
@@ -63,7 +63,7 @@ uintptr_t remote_post_call(int pid, struct user_regs_struct &regs, uintptr_t exp
 
 bool wait_for_trace(int pid, int *status, int flags);
 std::string parse_status(int status);
-void *find_module_return_addr(const std::vector<lsplt::MapInfo> &map_info, std::string_view module_suffix);
+void *find_module_return_addr(const std::vector<ts::MapInfo> &map_info, std::string_view module_suffix);
 
 constexpr size_t kMainMagicLength = 16;
 std::string generateMagic(size_t length);
