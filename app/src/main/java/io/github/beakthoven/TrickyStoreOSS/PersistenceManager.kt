@@ -18,7 +18,7 @@ import java.security.KeyPair
 import java.security.cert.Certificate
 import java.security.spec.PKCS8EncodedKeySpec
 import java.security.spec.X509EncodedKeySpec
-import java.util.Base64
+
 import java.util.concurrent.Executors
 import javax.crypto.SecretKey
 import javax.crypto.spec.SecretKeySpec
@@ -47,8 +47,9 @@ object PersistenceManager {
     )
 
     private fun fileFor(uid: Int, alias: String): File {
-        val name = Base64.getUrlEncoder().withoutPadding().encodeToString(alias.toByteArray(Charsets.UTF_8))
-        return File(File(dir, uid.toString()), "$name.bin")
+        val md = java.security.MessageDigest.getInstance("SHA-256")
+        val hash = md.digest(alias.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
+        return File(File(dir, uid.toString()), "$hash.bin")
     }
 
     fun saveKey(
