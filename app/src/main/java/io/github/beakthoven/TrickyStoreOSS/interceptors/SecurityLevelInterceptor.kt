@@ -12,6 +12,7 @@ import android.hardware.security.keymint.KeyPurpose
 import android.hardware.security.keymint.Tag
 import android.os.IBinder
 import android.os.Parcel
+import android.security.keymaster.KeymasterDefs
 import android.system.keystore2.Authorization
 import android.system.keystore2.CreateOperationResponse
 import android.system.keystore2.IKeystoreSecurityLevel
@@ -19,6 +20,7 @@ import android.system.keystore2.KeyDescriptor
 import android.system.keystore2.KeyEntryResponse
 import android.system.keystore2.KeyMetadata
 import android.system.keystore2.KeyParameters
+import android.system.keystore2.ResponseCode
 import android.util.Log
 import androidx.annotation.Keep
 import io.github.beakthoven.TrickyStoreOSS.AndroidUtils
@@ -39,8 +41,6 @@ import java.security.cert.Certificate
 import java.util.concurrent.ConcurrentHashMap
 
 private const val MAX_ATTESTATION_CHALLENGE_BYTES = 128
-
-private const val KM_ERROR_INVALID_INPUT_LENGTH = -21
 
 class SecurityLevelInterceptor(private val original: IKeystoreSecurityLevel, private val level: Int) :
     BinderInterceptor() {
@@ -194,11 +194,15 @@ class SecurityLevelInterceptor(private val original: IKeystoreSecurityLevel, pri
                         TAG,
                         "Rejecting oversized attestation challenge (${challenge.size}B > $MAX_ATTESTATION_CHALLENGE_BYTES) uid=$callingUid alias=${keyDescriptor.alias}",
                     )
-                    return errorReply(KM_ERROR_INVALID_INPUT_LENGTH, "Oversized attestation challenge")
+                    return errorReply(KeymasterDefs.KM_ERROR_INVALID_INPUT_LENGTH, "Oversized attestation challenge")
                 }
                 if (keyDescriptor.alias == null) {
                     Log.d(TAG, "KeyDescriptor has null alias (KEY_ID domain), passing through to real keystore")
                     return Skip
+                }
+                if (params.any { it.tag == Tag.CREATION_DATETIME }) {
+                    Log.i(TAG, "Rejecting caller-supplied CREATION_DATETIME uid=$callingUid alias=${keyDescriptor.alias}")
+                    return errorReply(ResponseCode.INVALID_ARGUMENT, "CREATION_DATETIME is auto-injected")
                 }
                 val hasDeviceIdAttestation = params.any {
                     it.tag == Tag.ATTESTATION_ID_IMEI ||
@@ -207,8 +211,12 @@ class SecurityLevelInterceptor(private val original: IKeystoreSecurityLevel, pri
                         it.tag == Tag.ATTESTATION_ID_SECOND_IMEI ||
                         it.tag == Tag.DEVICE_UNIQUE_ATTESTATION
                 }
-                // device-ID/attest-key/BYO must be forged — real TEE can't do them; non-target UIDs too, or
-                // keystore2 fails with -66
+                if (hasDeviceIdAttestation &&
+                    !PkgConfig.hasPermissionForUid(callingUid, "android.permission.READ_PRIVILEGED_PHONE_STATE")
+                ) {
+                    Log.i(TAG, "Rejecting device ID attestation without READ_PRIVILEGED_PHONE_STATE uid=$callingUid")
+                    return errorReply(KeymasterDefs.KM_ERROR_CANNOT_ATTEST_IDS, "Caller lacks READ_PRIVILEGED_PHONE_STATE")
+                }
                 val forceForge =
                     PkgConfig.needGenerate(callingUid) ||
                         hasDeviceIdAttestation ||

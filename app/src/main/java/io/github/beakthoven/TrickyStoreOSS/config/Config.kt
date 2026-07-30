@@ -147,6 +147,14 @@ object PkgConfig {
         return iPm
     }
 
+    fun hasPermissionForUid(uid: Int, permission: String): Boolean {
+        val userId = uid / 100000
+        return (uidPackages.getOrPut(uid) { getPm()?.getPackagesForUid(uid) ?: return false })
+            .any { pkg ->
+                runCatching { getPm()?.checkPermission(permission, pkg, userId) == 0 }.getOrDefault(false)
+            }
+    }
+
     private fun checkNeed(callingUid: Int, targetMode: Mode, autoPredicate: Boolean): Boolean {
         val raw = runCatching {
             val ps =

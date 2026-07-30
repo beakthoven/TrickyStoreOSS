@@ -10,6 +10,8 @@ import android.os.IBinder;
 public interface IPackageManager {
     String[] getPackagesForUid(int uid);
 
+    int checkPermission(String permName, String pkgName, int userId);
+
     PackageInfo getPackageInfo(String packageName, long flags, int userId);
 
     PackageInfo getPackageInfo(String packageName, int flags, int userId);
