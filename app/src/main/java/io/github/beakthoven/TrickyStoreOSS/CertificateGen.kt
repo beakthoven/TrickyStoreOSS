@@ -408,6 +408,7 @@ object CertificateGen {
         if (params.unlockedDeviceRequired == true) sw.add(DERTaggedObject(true, 509, DERNull.INSTANCE))
         if (applicationId != null) sw.add(DERTaggedObject(true, 709, applicationId))
         if (AndroidUtils.attestVersion >= 400) sw.add(DERTaggedObject(true, 724, moduleHash))
+        sw.sortBy { (it as DERTaggedObject).tagNo }
 
         val keyDesc =
             arrayOf(
