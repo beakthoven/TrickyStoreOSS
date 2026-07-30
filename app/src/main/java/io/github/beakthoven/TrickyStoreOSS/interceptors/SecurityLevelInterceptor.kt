@@ -267,6 +267,20 @@ class SecurityLevelInterceptor(private val original: IKeystoreSecurityLevel, pri
                 val info = findGeneratedKey(callingUid, descriptor)
                 if (info == null) return@runCatching null
                 val opParams = data.createTypedArray(KeyParameter.CREATOR) ?: emptyArray<KeyParameter>()
+                // AIDL: createOperation(KeyDescriptor, KeyParameter[], boolean force)
+                val force = data.dataAvail() > 0 && data.readBoolean()
+                if (force) {
+                    Log.i(TAG, "createOperation rejected: forced op uid=$callingUid alias=${descriptor.alias}")
+                    return@runCatching errorReply(ResponseCode.PERMISSION_DENIED, "Forced operations require system privilege")
+                }
+                val key = resolveKey(callingUid, descriptor)
+                if (key != null && info.params.usageCountLimit > 0) {
+                    val remaining = usageRemaining[key]
+                    if (remaining != null && remaining <= 0) {
+                        Log.i(TAG, "createOperation: usage exhausted uid=$callingUid alias=${descriptor.alias}")
+                        return@runCatching errorReply(ResponseCode.KEY_NOT_FOUND, "Key usage limit exhausted")
+                    }
+                }
                 val opRequest = OpRequest.parse(opParams)
                 val errCode = authorizeOperation(info.params, opRequest)
                 if (errCode != null) {
