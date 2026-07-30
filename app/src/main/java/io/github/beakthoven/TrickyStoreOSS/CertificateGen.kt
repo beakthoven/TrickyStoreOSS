@@ -74,6 +74,7 @@ object CertificateGen {
         var mgfDigest: MutableList<Int> = mutableListOf(),
         var usageCountLimit: Int = 0,
         var callerNonce: Boolean? = null,
+        var unlockedDeviceRequired: Boolean? = null,
         var activeDateTime: Long? = null,
         var originationExpireDateTime: Long? = null,
         var usageExpireDateTime: Long? = null,
@@ -113,6 +114,7 @@ object CertificateGen {
                             Tag.USAGE_COUNT_LIMIT -> usageCountLimit = v.integer
                             Tag.MAX_USES_PER_BOOT -> if (usageCountLimit == 0) usageCountLimit = v.integer
                             Tag.CALLER_NONCE -> callerNonce = v.boolValue
+                            Tag.UNLOCKED_DEVICE_REQUIRED -> unlockedDeviceRequired = v.boolValue
                             Tag.ACTIVE_DATETIME -> activeDateTime = v.dateTime
                             Tag.ORIGINATION_EXPIRE_DATETIME -> originationExpireDateTime = v.dateTime
                             Tag.USAGE_EXPIRE_DATETIME -> usageExpireDateTime = v.dateTime
@@ -390,6 +392,8 @@ object CertificateGen {
         tee.sortBy { (it as DERTaggedObject).tagNo }
 
         val sw = mutableListOf<ASN1Encodable>(DERTaggedObject(true, 701, creationDateTime))
+        if (params.usageCountLimit > 0) sw.add(DERTaggedObject(true, 405, ASN1Integer(params.usageCountLimit.toLong())))
+        if (params.unlockedDeviceRequired == true) sw.add(DERTaggedObject(true, 509, DERNull.INSTANCE))
         if (applicationId != null) sw.add(DERTaggedObject(true, 709, applicationId))
         if (AndroidUtils.attestVersion >= 400) sw.add(DERTaggedObject(true, 724, moduleHash))
 

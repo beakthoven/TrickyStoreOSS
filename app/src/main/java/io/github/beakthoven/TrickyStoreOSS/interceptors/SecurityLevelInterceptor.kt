@@ -433,6 +433,8 @@ class SecurityLevelInterceptor(private val original: IKeystoreSecurityLevel, pri
             tee(Tag.BOOT_PATCHLEVEL, KeyParameterValue.integer(AndroidUtils.bootPatchLevelLong))
 
         sw(Tag.CREATION_DATETIME, KeyParameterValue.dateTime(System.currentTimeMillis()))
+        if (params.usageCountLimit > 0) sw(Tag.USAGE_COUNT_LIMIT, KeyParameterValue.integer(params.usageCountLimit))
+        params.unlockedDeviceRequired?.let { sw(Tag.UNLOCKED_DEVICE_REQUIRED, KeyParameterValue.boolValue(it)) }
         sw(Tag.USER_ID, KeyParameterValue.integer(callingUid / 100000))
 
         metadata.authorizations = authorizations.toTypedArray<Authorization>()

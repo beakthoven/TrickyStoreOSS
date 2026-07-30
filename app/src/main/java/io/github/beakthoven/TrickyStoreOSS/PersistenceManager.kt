@@ -24,7 +24,7 @@ import javax.crypto.SecretKey
 import javax.crypto.spec.SecretKeySpec
 
 object PersistenceManager {
-    private const val FORMAT_VERSION = 2
+    private const val FORMAT_VERSION = 3
     private val dir = File("/data/adb/tricky_store/keys")
 
     // single-threaded, off the binder thread — save/delete/clearAll can't race
@@ -148,6 +148,9 @@ object PersistenceManager {
                 val callerNonce = params.callerNonce
                 out.writeBoolean(callerNonce != null)
                 if (callerNonce != null) out.writeBoolean(callerNonce)
+                val unlockedDeviceRequired = params.unlockedDeviceRequired
+                out.writeBoolean(unlockedDeviceRequired != null)
+                if (unlockedDeviceRequired != null) out.writeBoolean(unlockedDeviceRequired)
                 val activeDateTime = params.activeDateTime
                 out.writeBoolean(activeDateTime != null)
                 if (activeDateTime != null) out.writeLong(activeDateTime)
@@ -231,6 +234,7 @@ object PersistenceManager {
                         val mgfDigest = readIntList(ins)
                         val usageCountLimit = ins.readInt()
                         val callerNonce = if (ins.readBoolean()) ins.readBoolean() else null
+                        val unlockedDeviceRequired = if (ins.readBoolean()) ins.readBoolean() else null
                         val activeDateTime = if (ins.readBoolean()) ins.readLong() else null
                         val originationExpireDateTime = if (ins.readBoolean()) ins.readLong() else null
                         val usageExpireDateTime = if (ins.readBoolean()) ins.readLong() else null
@@ -262,6 +266,7 @@ object PersistenceManager {
                                 this.mgfDigest = mgfDigest.toMutableList()
                                 this.usageCountLimit = usageCountLimit
                                 this.callerNonce = callerNonce
+                                this.unlockedDeviceRequired = unlockedDeviceRequired
                                 this.activeDateTime = activeDateTime
                                 this.originationExpireDateTime = originationExpireDateTime
                                 this.usageExpireDateTime = usageExpireDateTime
