@@ -137,6 +137,17 @@ object CertificateGen {
         }
     }
 
+    fun effectiveKeySize(params: KeyGenParameters): Int {
+        if (params.keySize > 0) return params.keySize
+        if (params.algorithm != Algorithm.EC) return 0
+        return when (params.ecCurve) {
+            EcCurve.P_384 -> 384
+            EcCurve.P_521 -> 521
+            EcCurve.CURVE_25519 -> 256
+            else -> 256
+        }
+    }
+
     fun generateKeyPair(params: KeyGenParameters): KeyPair? {
         val raw = runCatching {
             when (params.algorithm) {
@@ -360,7 +371,8 @@ object CertificateGen {
 
         teeSet(1, params.purpose)
         teeTag(2, ASN1Integer(params.algorithm.toLong()))
-        teeTag(3, ASN1Integer(params.keySize.toLong()))
+        val effectiveKey = effectiveKeySize(params)
+        if (effectiveKey > 0) teeTag(3, ASN1Integer(effectiveKey.toLong()))
         teeSet(5, params.digest)
         teeTag(503, DERNull.INSTANCE)
         teeTag(702, origin)

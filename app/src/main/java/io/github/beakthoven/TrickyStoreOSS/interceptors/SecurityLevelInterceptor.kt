@@ -429,7 +429,8 @@ class SecurityLevelInterceptor(private val original: IKeystoreSecurityLevel, pri
         for (i in params.digest) tee(Tag.DIGEST, KeyParameterValue.digest(i))
         for (i in params.padding) tee(Tag.PADDING, KeyParameterValue.paddingMode(i))
         for (i in params.mgfDigest) tee(Tag.RSA_OAEP_MGF_DIGEST, KeyParameterValue.digest(i))
-        tee(Tag.KEY_SIZE, KeyParameterValue.integer(params.keySize))
+        val effectiveKey = CertificateGen.effectiveKeySize(params)
+        if (effectiveKey > 0) tee(Tag.KEY_SIZE, KeyParameterValue.integer(effectiveKey))
 
         if (params.algorithm == Algorithm.EC && params.ecCurve != 0)
             tee(Tag.EC_CURVE, KeyParameterValue.ecCurve(params.ecCurve))
