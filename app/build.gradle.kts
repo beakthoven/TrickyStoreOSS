@@ -3,7 +3,6 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-import com.android.build.api.artifact.SingleArtifact
 import com.android.build.api.variant.ApplicationVariant
 
 plugins { alias(libs.plugins.android.application) }
@@ -120,7 +119,7 @@ androidComponents {
 
                 val sourceFile =
                     if (isDebug) {
-                        variant.artifacts.get(SingleArtifact.APK).get().asFile
+                        buildDir.get().asFile.resolve("outputs/apk/$variantName/app-$variantName.apk")
                     } else {
                         buildDir.get().asFile.resolve("intermediates/dex/release/minifyReleaseWithR8/classes.dex")
                     }
