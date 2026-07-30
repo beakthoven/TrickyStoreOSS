@@ -436,8 +436,8 @@ class SecurityLevelInterceptor(private val original: IKeystoreSecurityLevel, pri
             tee(Tag.EC_CURVE, KeyParameterValue.ecCurve(params.ecCurve))
         params.rsaPublicExponent?.let { tee(Tag.RSA_PUBLIC_EXPONENT, KeyParameterValue.longInteger(it.toLong())) }
 
-        tee(Tag.NO_AUTH_REQUIRED, KeyParameterValue.boolValue(true))
-        tee(Tag.ORIGIN, KeyParameterValue.origin(0)) // GENERATED
+        if (params.noAuthRequired == true) tee(Tag.NO_AUTH_REQUIRED, KeyParameterValue.boolValue(true))
+        tee(Tag.ORIGIN, KeyParameterValue.origin(params.origin ?: 0))
         tee(Tag.OS_VERSION, KeyParameterValue.integer(AndroidUtils.osVersion))
 
         if (AndroidUtils.patchLevel != AndroidUtils.DO_NOT_REPORT)
@@ -448,8 +448,12 @@ class SecurityLevelInterceptor(private val original: IKeystoreSecurityLevel, pri
             tee(Tag.BOOT_PATCHLEVEL, KeyParameterValue.integer(AndroidUtils.bootPatchLevelLong))
 
         sw(Tag.CREATION_DATETIME, KeyParameterValue.dateTime(System.currentTimeMillis()))
+        params.activeDateTime?.let { sw(Tag.ACTIVE_DATETIME, KeyParameterValue.dateTime(it)) }
+        params.originationExpireDateTime?.let { sw(Tag.ORIGINATION_EXPIRE_DATETIME, KeyParameterValue.dateTime(it)) }
+        params.usageExpireDateTime?.let { sw(Tag.USAGE_EXPIRE_DATETIME, KeyParameterValue.dateTime(it)) }
         if (params.usageCountLimit > 0) sw(Tag.USAGE_COUNT_LIMIT, KeyParameterValue.integer(params.usageCountLimit))
         params.unlockedDeviceRequired?.let { sw(Tag.UNLOCKED_DEVICE_REQUIRED, KeyParameterValue.boolValue(it)) }
+        if (params.callerNonce == true) tee(Tag.CALLER_NONCE, KeyParameterValue.boolValue(true))
         sw(Tag.USER_ID, KeyParameterValue.integer(callingUid / 100000))
 
         metadata.authorizations = authorizations.toTypedArray<Authorization>()

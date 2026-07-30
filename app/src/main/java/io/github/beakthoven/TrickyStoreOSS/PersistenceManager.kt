@@ -161,6 +161,13 @@ object PersistenceManager {
                 out.writeBoolean(usageExpireDateTime != null)
                 if (usageExpireDateTime != null) out.writeLong(usageExpireDateTime)
 
+                val noAuthRequired = params.noAuthRequired
+                out.writeBoolean(noAuthRequired != null)
+                if (noAuthRequired != null) out.writeBoolean(noAuthRequired)
+                val origin = params.origin
+                out.writeBoolean(origin != null)
+                if (origin != null) out.writeInt(origin)
+
                 val rsaExp = params.rsaPublicExponent
                 out.writeBoolean(rsaExp != null)
                 if (rsaExp != null) {
@@ -238,6 +245,8 @@ object PersistenceManager {
                         val activeDateTime = if (ins.readBoolean()) ins.readLong() else null
                         val originationExpireDateTime = if (ins.readBoolean()) ins.readLong() else null
                         val usageExpireDateTime = if (ins.readBoolean()) ins.readLong() else null
+                        val noAuthRequired = if (ins.readBoolean()) ins.readBoolean() else null
+                        val origin = if (ins.readBoolean()) ins.readInt() else null
                         val rsaExp =
                             if (ins.readBoolean()) {
                                 val b = ByteArray(ins.readInt()).also { ins.readFully(it) }
@@ -270,6 +279,8 @@ object PersistenceManager {
                                 this.activeDateTime = activeDateTime
                                 this.originationExpireDateTime = originationExpireDateTime
                                 this.usageExpireDateTime = usageExpireDateTime
+                                this.noAuthRequired = noAuthRequired
+                                this.origin = origin
                                 this.rsaPublicExponent = rsaExp
                             }
 

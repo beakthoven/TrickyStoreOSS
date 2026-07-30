@@ -89,6 +89,8 @@ object CertificateGen {
         var meid: ByteArray? = null,
         var serialno: ByteArray? = null,
         var includeUniqueId: Boolean? = null,
+        var noAuthRequired: Boolean? = null,
+        var origin: Int? = null,
     ) {
         constructor(params: Array<KeyParameter>) : this() {
             params.forEach { p ->
@@ -129,6 +131,8 @@ object CertificateGen {
                             Tag.ATTESTATION_ID_MEID -> meid = v.blob
                             Tag.ATTESTATION_ID_SERIAL -> serialno = v.blob
                             Tag.INCLUDE_UNIQUE_ID -> includeUniqueId = v.boolValue
+                            Tag.NO_AUTH_REQUIRED -> noAuthRequired = v.boolValue
+                            Tag.ORIGIN -> origin = v.origin
                         }
                     }
                     .onFailure { Log.d(TAG, "Skipping key parameter tag=${p.tag}: ${it.message}") }
@@ -161,7 +165,7 @@ object CertificateGen {
                 Algorithm.RSA -> {
                     Log.d(TAG, "Generating RSA keypair of size ${params.keySize}")
                     KeyPairGenerator.getInstance("RSA", BouncyCastleProvider.PROVIDER_NAME)
-                        .apply { initialize(RSAKeyGenParameterSpec(params.keySize, params.rsaPublicExponent)) }
+                        .apply { initialize(RSAKeyGenParameterSpec(params.keySize, params.rsaPublicExponent ?: RSAKeyGenParameterSpec.F4)) }
                         .generateKeyPair()
                 }
 
@@ -279,8 +283,8 @@ object CertificateGen {
             JcaX509v3CertificateBuilder(
                 issuer,
                 params.certificateSerial ?: BigInteger.ONE,
-                params.certificateNotBefore ?: Date(),
-                params.certificateNotAfter ?: (keybox.certificates[0] as X509Certificate).notAfter,
+                params.certificateNotBefore ?: Date(0),
+                params.certificateNotAfter ?: Date(253402300799000L),
                 params.certificateSubject ?: X500Name("CN=Android Keystore Key"),
                 keyPair.public,
             )
@@ -351,7 +355,7 @@ object CertificateGen {
         val osVersion = ASN1Integer(AndroidUtils.osVersion.toLong())
         val creationTimeMs = System.currentTimeMillis()
         val creationDateTime = ASN1Integer(creationTimeMs)
-        val origin = ASN1Integer(0L)
+        val origin = ASN1Integer((params.origin ?: 0).toLong())
         val moduleHash = DEROctetString(AndroidUtils.moduleHash)
         val applicationId = if (params.attestationChallenge != null) createApplicationId(uid) else null
         val uniqueId =
@@ -374,7 +378,8 @@ object CertificateGen {
         val effectiveKey = effectiveKeySize(params)
         if (effectiveKey > 0) teeTag(3, ASN1Integer(effectiveKey.toLong()))
         teeSet(5, params.digest)
-        teeTag(503, DERNull.INSTANCE)
+        if (params.noAuthRequired == true) teeTag(503, DERNull.INSTANCE)
+        if (params.callerNonce == true) teeTag(1005, DERNull.INSTANCE)
         teeTag(702, origin)
         teeTag(704, rootOfTrust)
         teeTag(705, osVersion)
@@ -404,6 +409,9 @@ object CertificateGen {
         tee.sortBy { (it as DERTaggedObject).tagNo }
 
         val sw = mutableListOf<ASN1Encodable>(DERTaggedObject(true, 701, creationDateTime))
+        params.activeDateTime?.let { sw.add(DERTaggedObject(true, 400, ASN1Integer(it))) }
+        params.originationExpireDateTime?.let { sw.add(DERTaggedObject(true, 401, ASN1Integer(it))) }
+        params.usageExpireDateTime?.let { sw.add(DERTaggedObject(true, 402, ASN1Integer(it))) }
         if (params.usageCountLimit > 0) sw.add(DERTaggedObject(true, 405, ASN1Integer(params.usageCountLimit.toLong())))
         if (params.unlockedDeviceRequired == true) sw.add(DERTaggedObject(true, 509, DERNull.INSTANCE))
         if (applicationId != null) sw.add(DERTaggedObject(true, 709, applicationId))
