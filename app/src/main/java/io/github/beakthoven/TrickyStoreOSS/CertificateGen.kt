@@ -144,10 +144,11 @@ object CertificateGen {
     fun effectiveKeySize(params: KeyGenParameters): Int {
         if (params.keySize > 0) return params.keySize
         if (params.algorithm != Algorithm.EC) return 0
-        return when (params.ecCurve) {
-            EcCurve.P_384 -> 384
-            EcCurve.P_521 -> 521
-            EcCurve.CURVE_25519 -> 256
+        return when (params.ecCurveName) {
+            "secp224r1" -> 224
+            "secp384r1" -> 384
+            "secp521r1" -> 521
+            "CURVE_25519" -> 256
             else -> 256
         }
     }
