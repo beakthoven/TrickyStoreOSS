@@ -329,9 +329,9 @@ class SecurityLevelInterceptor(private val original: IKeystoreSecurityLevel, pri
                         val rest = metadata.certificateChain?.toCertificates() ?: emptyList()
                         (listOf<Certificate>(leaf) + rest).toTypedArray()
                     }
-                val patched = CertificateHack.hackCertificateChain(chain)
+                val patched = CertificateHack.hackCertificateChain(chain, callingUid)
                 metadata.putCertificateChain(patched).getOrThrow()
-                metadata.authorizations = CertificateHack.patchAuthorizations(metadata.authorizations)
+                metadata.authorizations = CertificateHack.patchAuthorizations(metadata.authorizations, callingUid)
                 val response =
                     KeyEntryResponse().apply {
                         this.metadata = metadata
@@ -440,12 +440,12 @@ class SecurityLevelInterceptor(private val original: IKeystoreSecurityLevel, pri
         tee(Tag.ORIGIN, KeyParameterValue.origin(params.origin ?: 0))
         tee(Tag.OS_VERSION, KeyParameterValue.integer(AndroidUtils.osVersion))
 
-        if (AndroidUtils.patchLevel != AndroidUtils.DO_NOT_REPORT)
-            tee(Tag.OS_PATCHLEVEL, KeyParameterValue.integer(AndroidUtils.patchLevel))
-        if (AndroidUtils.vendorPatchLevelLong != AndroidUtils.DO_NOT_REPORT)
-            tee(Tag.VENDOR_PATCHLEVEL, KeyParameterValue.integer(AndroidUtils.vendorPatchLevelLong))
-        if (AndroidUtils.bootPatchLevelLong != AndroidUtils.DO_NOT_REPORT)
-            tee(Tag.BOOT_PATCHLEVEL, KeyParameterValue.integer(AndroidUtils.bootPatchLevelLong))
+        if (AndroidUtils.patchLevel(callingUid) != AndroidUtils.DO_NOT_REPORT)
+            tee(Tag.OS_PATCHLEVEL, KeyParameterValue.integer(AndroidUtils.patchLevel(callingUid)))
+        if (AndroidUtils.vendorPatchLevelLong(callingUid) != AndroidUtils.DO_NOT_REPORT)
+            tee(Tag.VENDOR_PATCHLEVEL, KeyParameterValue.integer(AndroidUtils.vendorPatchLevelLong(callingUid)))
+        if (AndroidUtils.bootPatchLevelLong(callingUid) != AndroidUtils.DO_NOT_REPORT)
+            tee(Tag.BOOT_PATCHLEVEL, KeyParameterValue.integer(AndroidUtils.bootPatchLevelLong(callingUid)))
 
         sw(Tag.CREATION_DATETIME, KeyParameterValue.dateTime(System.currentTimeMillis()))
         params.activeDateTime?.let { sw(Tag.ACTIVE_DATETIME, KeyParameterValue.dateTime(it)) }

@@ -90,30 +90,72 @@ io.github.vvb2060.keyattestation?   # leaf hacking
 com.google.android.gms!             # certificate generation
 ```
 
-### `security_patch.txt` — patch level override
+### `security_patch.txt`
 
-**Simple form** — hacks os/vendor/boot patch level to one value:
+Optional. Lives at `/data/adb/tricky_store/security_patch.txt`. It sets the three patch levels a spoofed attestation reports: `osPatchLevel` (system), `vendorPatchLevel`, and `bootPatchLevel`. It only changes KeyAttestation output, not system properties. Changes apply on save, so no reboot is needed.
+
+Lines starting with `#` are comments, and blank lines are ignored.
+
+#### Global and per-package
+
+Settings above a package header are considered global and is the default for every app. A package header (`[package.name]`) on its own line targets one app; everything below it applies only to that app until the next header. This lets you give different apps different dates, for example an old system date for `com.google.android.gms` and a recent one everywhere else.
+
+A package inherits anything it does not set from the global block. For example: `[com.google.android.gms]` block that sets only `system=` still picks up the global `vendor=` and `boot=`.
+
+#### Keys and dates
+
+The keys are `system`, `vendor`, `boot`, and `all`. `all` sets all three at once and any single key overrides it.
+
+Dates can be written as `YYYY-MM-DD`, `YYYYMMDD`, or `YYYYMM`. `YYYY`, `MM`, and `DD` work as placeholders for the current year, month, and day; they resolve on every attestation, so `YYYY-MM-05` always lands on the 5th of the current month.
+
+#### Special keywords
+
+- `no` omits that patch level tag entirely. The attestation reports nothing for it.
+- `device_default` keeps the device's real value for that component.
+- `prop` mirrors the system security-patch prop (`ro.build.version.security_patch`). It is kept for backward compatibility; `device_default` is the more accurate name for new configs.
+
+#### Examples
+
+Simple form, one date for all three levels:
 
 ```
 20241101
 ```
 
-**Advanced form** — per-partition control:
+Per partition:
 
 ```
 # system patch level
 system=202411
-# don't touch boot patch level
+# report nothing for boot
 boot=no
-# vendor patch level, alternate date format
+# vendor, alternate date format
 vendor=2024-11-01
-# default fallback for unset partitions
-# all=20241101
-# keep consistent with system prop
-# system=prop
+# keep the device's real boot level instead
+# boot=device_default
 ```
 
-> This only affects KeyAttestation results so it does **not** change system properties. Use `resetprop` separately if you need that.
+Per-package overrides:
+
+```
+# global default for every app
+system=YYYY-MM-05
+vendor=device_default
+boot=no
+
+# GMS needs the old print date for a legacy <A13 STRONG verdict
+[com.google.android.gms]
+system=2024-10-01
+
+# a demo app with its own set
+[org.app.demo]
+all=2025-09-15
+boot=device_default
+```
+
+GMS overrides only `system`; it inherits `vendor=device_default` and `boot=no` from the global block. The demo app sets all three to `2025-09-15` via `all`, then carves boot back out to the real device value.
+
+> This only affects KeyAttestation results. `resetprop` can be used separately if you need to change system properties.
 
 ---
 

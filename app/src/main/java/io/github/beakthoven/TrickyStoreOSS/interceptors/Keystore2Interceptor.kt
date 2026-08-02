@@ -448,10 +448,10 @@ object Keystore2Interceptor : BaseKeystoreInterceptor() {
                     if (cached != null) return createTypedObjectReply(cached)
                     val chain = CertificateUtils.run { response.getCertificateChain() }
                     if (chain != null) {
-                        val newChain = CertificateHack.hackCertificateChain(chain)
+                        val newChain = CertificateHack.hackCertificateChain(chain, callingUid)
                         response.putCertificateChain(newChain).getOrThrow()
                         response.metadata?.authorizations =
-                            CertificateHack.patchAuthorizations(response.metadata?.authorizations)
+                            CertificateHack.patchAuthorizations(response.metadata?.authorizations, callingUid)
                         if (cachedKey != null) SecurityLevelInterceptor.patchedResponses[cachedKey] = response
                         Log.d(TAG, "Hacked certificate for uid=$callingUid")
                         return createTypedObjectReply(response)

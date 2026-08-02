@@ -11,12 +11,12 @@ import android.security.KeyStore2
 import android.security.keystore.KeyStoreManager
 import android.util.Log
 import io.github.beakthoven.TrickyStoreOSS.AttestUtils.CachedAttestData
-import io.github.beakthoven.TrickyStoreOSS.config.CustomPatchLevel
 import io.github.beakthoven.TrickyStoreOSS.config.PkgConfig
 import io.github.beakthoven.TrickyStoreOSS.logging.TAG
 import java.io.File
 import java.security.MessageDigest
 import java.security.SecureRandom
+import java.time.LocalDate
 
 object AndroidUtils {
 
@@ -106,37 +106,63 @@ object AndroidUtils {
 
     private fun randomBytes(): ByteArray = ByteArray(32).also { SecureRandom().nextBytes(it) }
 
-    val patchLevel: Int
-        get() = getCustomPatchLevel("system", false) ?: Build.VERSION.SECURITY_PATCH.convertPatchLevel(false)
+    fun patchLevel(uid: Int): Int =
+        getCustomPatchLevel(uid, "system", false) ?: Build.VERSION.SECURITY_PATCH.convertPatchLevel(false)
 
-    val patchLevelLong: Int
-        get() = getCustomPatchLevel("system", true) ?: Build.VERSION.SECURITY_PATCH.convertPatchLevel(true)
+    fun patchLevelLong(uid: Int): Int =
+        getCustomPatchLevel(uid, "system", true) ?: Build.VERSION.SECURITY_PATCH.convertPatchLevel(true)
 
-    val vendorPatchLevelLong: Int
-        get() = getCustomPatchLevel("vendor", true) ?: Build.VERSION.SECURITY_PATCH.convertPatchLevel(true)
+    fun vendorPatchLevelLong(uid: Int): Int =
+        getCustomPatchLevel(uid, "vendor", true) ?: Build.VERSION.SECURITY_PATCH.convertPatchLevel(true)
 
-    val bootPatchLevelLong: Int
-        get() = getCustomPatchLevel("boot", true) ?: Build.VERSION.SECURITY_PATCH.convertPatchLevel(true)
+    fun bootPatchLevelLong(uid: Int): Int =
+        getCustomPatchLevel(uid, "boot", true) ?: Build.VERSION.SECURITY_PATCH.convertPatchLevel(true)
 
-    private val customPatchLevel: CustomPatchLevel?
-        get() = PkgConfig._customPatchLevel
+    // For patching a real keymaster cert: null = device_default (keep the original real value),
+    // DO_NOT_REPORT = omit, else = the value to inject. Used by the leaf-hack path so a real,
+    // correctly-sourced patch level (e.g. boot from the boot image header) is preserved.
+    fun patchLevelOverride(uid: Int): Int? = getCustomPatchLevel(uid, "system", false)
 
-    private fun getCustomPatchLevel(component: String, isLong: Boolean): Int? {
-        val config = customPatchLevel ?: return null
+    fun vendorPatchLevelOverride(uid: Int): Int? = getCustomPatchLevel(uid, "vendor", true)
+
+    fun bootPatchLevelOverride(uid: Int): Int? = getCustomPatchLevel(uid, "boot", true)
+
+    private fun getCustomPatchLevel(uid: Int, component: String, isLong: Boolean): Int? {
+        val pkg = PkgConfig.packagePatchLevelForUid(uid)
+        val global = PkgConfig.globalPatchLevelConfig
         val value =
             when (component) {
-                "system" -> config.system ?: config.all
-                "vendor" -> config.vendor ?: config.all
-                "boot" -> config.boot ?: config.all
-                else -> config.all
-            } ?: return null
+                "system" -> pkg?.system ?: pkg?.all ?: global?.system ?: global?.all
+                "vendor" -> pkg?.vendor ?: pkg?.all ?: global?.vendor ?: global?.all
+                "boot" -> pkg?.boot ?: pkg?.all ?: global?.boot ?: global?.all
+                else -> pkg?.all ?: global?.all
+            }
+
+        // Unset, or explicit "prop": mirror the system security-patch prop (TrickyStore behavior).
+        if (value == null || value.equals("prop", ignoreCase = true))
+            return Build.VERSION.SECURITY_PATCH.convertPatchLevel(isLong)
 
         when {
             value.equals("no", ignoreCase = true) -> return DO_NOT_REPORT
-            value.equals("prop", ignoreCase = true) -> return null
+            // device_default: fall back to the device's real per-component value. In the forged
+            // path that resolves to the system patch; in the patch path the caller keeps the
+            // original keymaster value (null signals "do not touch").
+            value.equals("device_default", ignoreCase = true) -> return null
         }
 
-        return parsePatchLevelValue(value, component, isLong)
+        return parsePatchLevelValue(resolveDateValue(value), component, isLong)
+    }
+
+    // ponytail: resolves per-attestation, so date templates stay current without a reload
+    private fun resolveDateValue(value: String): String {
+        val now = LocalDate.now()
+        val y = "%04d".format(now.year)
+        val m = "%02d".format(now.monthValue)
+        val d = "%02d".format(now.dayOfMonth)
+        return value
+            .replace("YYYY", y, ignoreCase = true)
+            .replace("MM", m, ignoreCase = true)
+            .replace("DD", d, ignoreCase = true)
     }
 
     private fun parsePatchLevelValue(value: String, component: String, isLong: Boolean): Int? {

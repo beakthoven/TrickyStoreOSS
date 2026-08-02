@@ -179,42 +179,60 @@ object PkgConfig {
 
     fun needGenerate(callingUid: Int): Boolean = checkNeed(callingUid, Mode.GENERATE, teeBroken == true)
 
-    @Volatile var _customPatchLevel: CustomPatchLevel? = null
+    @Volatile private var globalPatchLevel: CustomPatchLevel? = null
+
+    @Volatile private var packagePatchLevels: Map<String, CustomPatchLevel> = emptyMap()
+
+    val globalPatchLevelConfig: CustomPatchLevel? get() = globalPatchLevel
+
+    fun packagePatchLevelForUid(uid: Int): CustomPatchLevel? {
+        val packages = uidPackages.getOrPut(uid) { getPm()?.getPackagesForUid(uid) ?: return null }
+        return packages.firstNotNullOfOrNull { packagePatchLevels[it] }
+    }
+
+    private val patchSectionRegex = Regex("^\\[([A-Za-z0-9_.-]+)]$")
 
     fun updatePatchLevel(f: File?) {
         val raw = runCatching {
             if (f == null || !f.exists()) {
-                _customPatchLevel = null
+                globalPatchLevel = null
+                packagePatchLevels = emptyMap()
                 return@runCatching
             }
-            val lines = f.readLines().map { it.trim() }.filter { it.isNotEmpty() && !it.startsWith("#") }
-            if (lines.isEmpty()) {
-                _customPatchLevel = null
-                return@runCatching
+            val contexts = LinkedHashMap<String, MutableList<String>>()
+            var current = ""
+            f.readLines().forEach { line ->
+                val trimmed = line.trim()
+                if (trimmed.isEmpty() || trimmed.startsWith("#")) return@forEach
+                patchSectionRegex.find(trimmed)?.let { current = it.groupValues[1] }
+                    ?: contexts.getOrPut(current) { mutableListOf() }.add(trimmed)
             }
-            if (lines.size == 1 && !lines[0].contains("=")) {
-                _customPatchLevel = CustomPatchLevel(all = lines[0])
-                return@runCatching
-            }
-            val map = mutableMapOf<String, String>()
-            for (line in lines) {
-                val idx = line.indexOf('=')
-                if (idx > 0) {
-                    val key = line.substring(0, idx).trim().lowercase()
-                    val value = line.substring(idx + 1).trim()
-                    map[key] = value
-                }
-            }
-            val all = map["all"]
-            _customPatchLevel =
-                CustomPatchLevel(
-                    system = map["system"] ?: all,
-                    vendor = map["vendor"] ?: all,
-                    boot = map["boot"] ?: all,
-                    all = all,
-                )
+            val parsed = mutableMapOf<String, CustomPatchLevel>()
+            for ((ctx, lines) in contexts) parsePatchContext(lines)?.let { parsed[ctx] = it }
+            globalPatchLevel = parsed[""]
+            packagePatchLevels = parsed.filterKeys { it.isNotEmpty() }
+            Log.i(TAG, "loaded patch levels: global=${globalPatchLevel != null}, ${packagePatchLevels.size} package overrides")
         }
         raw.onFailure { Log.e(TAG, "failed to update patch level", it) }
+    }
+
+    private fun parsePatchContext(lines: List<String>): CustomPatchLevel? {
+        if (lines.isEmpty()) return null
+        if (lines.size == 1 && '=' !in lines[0]) return CustomPatchLevel(all = lines[0])
+        val map = mutableMapOf<String, String>()
+        for (line in lines) {
+            val idx = line.indexOf('=')
+            if (idx > 0) {
+                map[line.substring(0, idx).trim().lowercase()] = line.substring(idx + 1).trim()
+            }
+        }
+        val all = map["all"]
+        return CustomPatchLevel(
+            system = map["system"] ?: all,
+            vendor = map["vendor"] ?: all,
+            boot = map["boot"] ?: all,
+            all = all,
+        )
     }
 
     private fun waitAndGetSystemService(name: String): IBinder? {

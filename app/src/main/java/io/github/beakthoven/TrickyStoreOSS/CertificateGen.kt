@@ -384,13 +384,13 @@ object CertificateGen {
         teeTag(702, origin)
         teeTag(704, rootOfTrust)
         teeTag(705, osVersion)
-        if (AndroidUtils.patchLevel != AndroidUtils.DO_NOT_REPORT)
-            teeTag(706, ASN1Integer(AndroidUtils.patchLevel.toLong()))
-        if (AndroidUtils.vendorPatchLevelLong != AndroidUtils.DO_NOT_REPORT) {
-            teeTag(718, ASN1Integer(AndroidUtils.vendorPatchLevelLong.toLong()))
+        if (AndroidUtils.patchLevel(uid) != AndroidUtils.DO_NOT_REPORT)
+            teeTag(706, ASN1Integer(AndroidUtils.patchLevel(uid).toLong()))
+        if (AndroidUtils.vendorPatchLevelLong(uid) != AndroidUtils.DO_NOT_REPORT) {
+            teeTag(718, ASN1Integer(AndroidUtils.vendorPatchLevelLong(uid).toLong()))
         }
-        if (AndroidUtils.bootPatchLevelLong != AndroidUtils.DO_NOT_REPORT) {
-            teeTag(719, ASN1Integer(AndroidUtils.bootPatchLevelLong.toLong()))
+        if (AndroidUtils.bootPatchLevelLong(uid) != AndroidUtils.DO_NOT_REPORT) {
+            teeTag(719, ASN1Integer(AndroidUtils.bootPatchLevelLong(uid).toLong()))
         }
         teeSet(4, params.blockMode)
         teeSet(6, params.padding)

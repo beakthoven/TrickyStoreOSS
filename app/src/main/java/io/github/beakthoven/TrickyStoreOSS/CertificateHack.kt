@@ -37,30 +37,31 @@ object CertificateHack {
 
     val leafAlgorithms = ConcurrentHashMap<KeyIdentifier, String>()
 
-    fun patchAuthorizations(authorizations: Array<Authorization>?): Array<Authorization>? {
+    fun patchAuthorizations(authorizations: Array<Authorization>?, uid: Int): Array<Authorization>? {
         if (authorizations == null) return null
-        val os = AndroidUtils.patchLevel
-        val vendor = AndroidUtils.vendorPatchLevelLong
-        val boot = AndroidUtils.bootPatchLevelLong
+        val os = AndroidUtils.patchLevelOverride(uid)
+        val vendor = AndroidUtils.vendorPatchLevelOverride(uid)
+        val boot = AndroidUtils.bootPatchLevelOverride(uid)
         return authorizations
-            .map { auth ->
-                val replacement: Int? =
-                    when (auth.keyParameter.tag) {
-                        Tag.OS_PATCHLEVEL -> if (os != AndroidUtils.DO_NOT_REPORT) os else null
-                        Tag.VENDOR_PATCHLEVEL -> if (vendor != AndroidUtils.DO_NOT_REPORT) vendor else null
-                        Tag.BOOT_PATCHLEVEL -> if (boot != AndroidUtils.DO_NOT_REPORT) boot else null
-                        else -> null
+            .mapNotNull { auth ->
+                val tag = auth.keyParameter.tag
+                val override =
+                    when (tag) {
+                        Tag.OS_PATCHLEVEL -> os
+                        Tag.VENDOR_PATCHLEVEL -> vendor
+                        Tag.BOOT_PATCHLEVEL -> boot
+                        else -> return@mapNotNull auth
                     }
-                if (replacement != null)
-                    Authorization().apply {
-                        securityLevel = auth.securityLevel
-                        keyParameter =
-                            KeyParameter().apply {
-                                tag = auth.keyParameter.tag
-                                value = KeyParameterValue.integer(replacement)
-                            }
-                    }
-                else auth
+                if (override == null) return@mapNotNull auth // device_default: keep the real value
+                if (override == AndroidUtils.DO_NOT_REPORT) return@mapNotNull null // "no": omit
+                Authorization().apply {
+                    securityLevel = auth.securityLevel
+                    keyParameter =
+                        KeyParameter().apply {
+                            this.tag = tag
+                            this.value = KeyParameterValue.integer(override)
+                        }
+                }
             }
             .toTypedArray()
     }
@@ -69,7 +70,7 @@ object CertificateHack {
         leafAlgorithms.clear()
     }
 
-    private fun hackLeaf(certificateChain: Array<Certificate>): Array<Certificate> {
+    private fun hackLeaf(certificateChain: Array<Certificate>, uid: Int): Array<Certificate> {
         val leaf =
             CertificateUtils.certificateFactory.generateCertificate(ByteArrayInputStream(certificateChain[0].encoded))
                 as X509Certificate
@@ -103,7 +104,7 @@ object CertificateHack {
                 leafHolder.subject,
                 leafHolder.subjectPublicKeyInfo,
             )
-        builder.addExtension(hackAttestExtension(rootOfTrust, vector, encodables, teeIndex))
+        builder.addExtension(hackAttestExtension(rootOfTrust, vector, encodables, teeIndex, uid))
         leafHolder.extensions.extensionOIDs.forEach { oid ->
             if (oid.id != ATTESTATION_OID.id) builder.addExtension(leafHolder.getExtension(oid))
         }
@@ -128,10 +129,10 @@ object CertificateHack {
         return certs.toTypedArray()
     }
 
-    fun hackCertificateChain(certificateChain: Array<Certificate>?): Array<Certificate> {
+    fun hackCertificateChain(certificateChain: Array<Certificate>?, uid: Int): Array<Certificate> {
         if (certificateChain == null) throw UnsupportedOperationException("Certificate chain is null!")
         return try {
-            hackLeaf(certificateChain)
+            hackLeaf(certificateChain, uid)
         } catch (t: Throwable) {
             Log.e(TAG, "Failed to hack certificate chain", t)
             certificateChain
@@ -163,7 +164,7 @@ object CertificateHack {
                     as X509Certificate
             if (leaf.getExtensionValue(ATTESTATION_OID.id) == null) return certificate
             leafAlgorithms[KeyIdentifier(alias, uid)] = leaf.publicKey.algorithm
-            val hacked = hackLeaf(arrayOf(leaf))
+            val hacked = hackLeaf(arrayOf(leaf), uid)
             hacked[0].encoded
         } catch (t: Throwable) {
             Log.e(TAG, "Failed to hack user certificate", t)
@@ -176,6 +177,7 @@ object CertificateHack {
         vector: ASN1EncodableVector,
         originalEncodables: Array<ASN1Encodable>,
         teeIndex: Int,
+        uid: Int,
     ): Extension {
         val verifiedBootKey = AndroidUtils.bootKey
         var verifiedBootHash: ByteArray? = null
@@ -201,18 +203,32 @@ object CertificateHack {
             )
         val hackedRootOfTrust = DERSequence(rootOfTrustElements)
 
-        val spoofedTags = setOf(704, 705, 706, 718, 719)
+        val osPatch = AndroidUtils.patchLevelOverride(uid)
+        val vendorPatch = AndroidUtils.vendorPatchLevelOverride(uid)
+        val bootPatch = AndroidUtils.bootPatchLevelOverride(uid)
+
         val rebuilt = mutableListOf<ASN1TaggedObject>()
         for (i in 0 until vector.size()) {
             val obj = vector.get(i)
-            if (obj is ASN1TaggedObject && obj.tagNo !in spoofedTags) {
-                rebuilt.add(obj)
+            if (obj !is ASN1TaggedObject) continue
+            // 704 (root of trust) and 705 (os version) are always rebuilt. A patch level is
+            // stripped only when overridden or omitted; device_default (null) keeps the
+            // original, correctly-sourced value (e.g. boot from the boot image header).
+            when (obj.tagNo) {
+                704, 705 -> continue
+                706 -> if (osPatch != null) continue
+                718 -> if (vendorPatch != null) continue
+                719 -> if (bootPatch != null) continue
             }
+            rebuilt.add(obj)
         }
         rebuilt.add(DERTaggedObject(true, 705, ASN1Integer(AndroidUtils.osVersion.toLong())))
-        rebuilt.add(DERTaggedObject(true, 706, ASN1Integer(AndroidUtils.patchLevel.toLong())))
-        rebuilt.add(DERTaggedObject(true, 718, ASN1Integer(AndroidUtils.vendorPatchLevelLong.toLong())))
-        rebuilt.add(DERTaggedObject(true, 719, ASN1Integer(AndroidUtils.bootPatchLevelLong.toLong())))
+        if (osPatch != null && osPatch != AndroidUtils.DO_NOT_REPORT)
+            rebuilt.add(DERTaggedObject(true, 706, ASN1Integer(osPatch.toLong())))
+        if (vendorPatch != null && vendorPatch != AndroidUtils.DO_NOT_REPORT)
+            rebuilt.add(DERTaggedObject(true, 718, ASN1Integer(vendorPatch.toLong())))
+        if (bootPatch != null && bootPatch != AndroidUtils.DO_NOT_REPORT)
+            rebuilt.add(DERTaggedObject(true, 719, ASN1Integer(bootPatch.toLong())))
         rebuilt.add(DERTaggedObject(704, hackedRootOfTrust))
         rebuilt.sortBy { it.tagNo }
 
