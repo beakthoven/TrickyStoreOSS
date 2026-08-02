@@ -141,16 +141,21 @@ object CertificateGen {
         }
     }
 
+    private data class EcCurveInfo(val curve: Int, val name: String, val size: Int)
+
+    // P_256 before CURVE_25519 so that fallback maps 256 -> secp256r1
+    private val EC_CURVES = listOf(
+        EcCurveInfo(EcCurve.P_224, "secp224r1", 224),
+        EcCurveInfo(EcCurve.P_256, "secp256r1", 256),
+        EcCurveInfo(EcCurve.P_384, "secp384r1", 384),
+        EcCurveInfo(EcCurve.P_521, "secp521r1", 521),
+        EcCurveInfo(EcCurve.CURVE_25519, "CURVE_25519", 256),
+    )
+
     fun effectiveKeySize(params: KeyGenParameters): Int {
         if (params.keySize > 0) return params.keySize
         if (params.algorithm != Algorithm.EC) return 0
-        return when (params.ecCurveName) {
-            "secp224r1" -> 224
-            "secp384r1" -> 384
-            "secp521r1" -> 521
-            "CURVE_25519" -> 256
-            else -> 256
-        }
+        return EC_CURVES.firstOrNull { it.name == params.ecCurveName }?.size ?: 256
     }
 
     fun generateKeyPair(params: KeyGenParameters): KeyPair? {
@@ -323,20 +328,9 @@ object CertificateGen {
     }
 
     private fun resolveEcCurveName(curve: Int, keySize: Int): String =
-        when (curve) {
-            EcCurve.CURVE_25519 -> "CURVE_25519"
-            EcCurve.P_224 -> "secp224r1"
-            EcCurve.P_256 -> "secp256r1"
-            EcCurve.P_384 -> "secp384r1"
-            EcCurve.P_521 -> "secp521r1"
-            else ->
-                when (keySize) {
-                    224 -> "secp224r1"
-                    384 -> "secp384r1"
-                    521 -> "secp521r1"
-                    else -> "secp256r1"
-                }
-        }
+        EC_CURVES.firstOrNull { it.curve == curve }?.name
+            ?: EC_CURVES.firstOrNull { it.size == keySize }?.name
+            ?: "secp256r1"
 
     fun generateChain(uid: Int, params: KeyGenParameters, keyPair: KeyPair, securityLevel: Int = 1): List<ByteArray>? {
         val raw = runCatching {
