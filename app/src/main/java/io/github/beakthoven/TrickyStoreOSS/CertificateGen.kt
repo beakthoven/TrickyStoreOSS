@@ -194,13 +194,7 @@ object CertificateGen {
 
                 Algorithm.HMAC -> {
                     val algo =
-                        when (params.digest.firstOrNull { it != 0 }) {
-                            KeymasterDefs.KM_DIGEST_SHA1 -> "HmacSHA1"
-                            KeymasterDefs.KM_DIGEST_SHA_2_256 -> "HmacSHA256"
-                            KeymasterDefs.KM_DIGEST_SHA_2_384 -> "HmacSHA384"
-                            KeymasterDefs.KM_DIGEST_SHA_2_512 -> "HmacSHA512"
-                            else -> "HmacSHA256"
-                        }
+                        "Hmac${CertificateUtils.digestName(params.digest.firstOrNull { it != 0 } ?: 0, false)}"
                     javax.crypto.KeyGenerator.getInstance(algo)
                         .apply { init(params.keySize.coerceAtLeast(256)) }
                         .generateKey()
