@@ -46,6 +46,12 @@ install_file() {
   ui_print "- Extracted $1"
 }
 
+# --- Remove any conflicting modules ---
+if [ -d /data/adb/modules/oh_my_keymint ]; then
+    touch /data/adb/modules/oh_my_keymint/remove
+    ui_print "! Oh My KeyMint module will be removed on next reboot"
+fi
+
 # --- Installation ---
 ui_print "- Extracting module files"
 for file in customize.sh module.prop post-fs-data.sh service.sh sepolicy.rule daemon; do
