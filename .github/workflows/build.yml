@@ -23,8 +23,6 @@ jobs:
   build:
     runs-on: ubuntu-latest
     permissions:
-      id-token: write
-      attestations: write
       contents: read
 
     outputs:
@@ -100,11 +98,6 @@ jobs:
           path: "./app/build/outputs/mapping/release"
           retention-days: 30
           compression-level: 9
-
-      - name: Attest build provenance
-        uses: actions/attest@v4
-        with:
-          subject-path: out/*.zip
 
       - name: Summary
         if: always()
