@@ -23,76 +23,27 @@ jobs:
           ref: ${{ github.head_ref }}
           fetch-depth: 0
 
-      - name: Apply reviewed migration
+      - name: Isolate Android 12+ resolver
         shell: bash
         run: |
           python3 - <<'PY'
           from pathlib import Path
 
-          def replace_once(path: Path, old: str, new: str) -> None:
-              text = path.read_text()
-              count = text.count(old)
-              if count != 1:
-                  raise SystemExit(f"{path}: expected one match, found {count}")
-              path.write_text(text.replace(old, new, 1))
+          path = Path("app/src/main/java/io/github/beakthoven/TrickyStoreOSS/AndroidUtils.kt")
+          text = path.read_text()
+          for line in (
+              "import android.hardware.security.keymint.IKeyMintDevice\n",
+              "import android.hardware.security.keymint.SecurityLevel\n",
+              "import android.os.ServiceManager\n",
+              "import android.security.compat.IKeystoreCompatService\n",
+          ):
+              if text.count(line) != 1:
+                  raise SystemExit(f"AndroidUtils.kt: expected one import: {line.strip()}")
+              text = text.replace(line, "", 1)
 
-          android_utils = Path("app/src/main/java/io/github/beakthoven/TrickyStoreOSS/AndroidUtils.kt")
-          replace_once(
-              android_utils,
-              """import android.hardware.security.keymint.IKeyMintDevice
-          import android.os.Build
-          import android.os.ServiceManager
-          import android.os.SystemProperties
-          """,
-              """import android.os.Build
-          import android.os.SystemProperties
-          """,
-          )
-          replace_once(
-              android_utils,
-              """import java.security.SecureRandom
-          import java.time.LocalDate
-          """,
-              """import java.security.SecureRandom
-          import java.time.LocalDate
-          import java.util.concurrent.ConcurrentHashMap
-          """,
-          )
-
-          old_resolver = """    @Volatile private var cachedKeyMintAttestVersion: Int? = null
-
-              private fun getKeyMintAttestVersion(): Int? {
-                  cachedKeyMintAttestVersion?.let { return it }
-                  if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return null
-
-                  val serviceName = "${IKeyMintDevice.DESCRIPTOR}/default"
-                  val binder = ServiceManager.checkService(serviceName) ?: return null
-                  return runCatching {
-                          val keyMint = IKeyMintDevice.Stub.asInterface(binder)
-                          val interfaceVersion = keyMint.interfaceVersion
-                          require(interfaceVersion > 0) { "Invalid KeyMint interface version: $interfaceVersion" }
-                          interfaceVersion * 100
-                      }
-                      .onSuccess { version ->
-                          cachedKeyMintAttestVersion = version
-                          Log.i(TAG, "Using KeyMint HAL version from $serviceName: $version")
-                      }
-                      .onFailure { Log.w(TAG, "Failed to query KeyMint HAL version from $serviceName", it) }
-                      .getOrNull()
-              }
-
-              val attestVersion: Int
-                  get() =
-                      CachedAttestData?.attestVersion
-                          ?: getKeyMintAttestVersion()
-                          ?: attestVersionMap[Build.VERSION.SDK_INT]
-                          ?: 500
-
-              val keymasterVersion: Int
-                  get() = CachedAttestData?.keymasterVersion ?: if (attestVersion == 4) 41 else attestVersion
-          """
-
-          new_resolver = """    data class AttestationVersions(val attestation: Int, val keymaster: Int)
+          start = text.index("    data class AttestationVersions")
+          end = text.index("    fun String.convertPatchLevel", start)
+          replacement = """    data class AttestationVersions(val attestation: Int, val keymaster: Int)
 
               private val resolvedVersions = ConcurrentHashMap<Int, AttestationVersions>()
 
@@ -132,8 +83,9 @@ jobs:
                   val attestation = attestVersionMap[Build.VERSION.SDK_INT] ?: 500
                   return AttestationVersions(attestation, keymasterVersionForAttestation(attestation))
               }
+
           """
-          replace_once(android_utils, old_resolver, new_resolver)
+          path.write_text(text[:start] + replacement + text[end:])
 
           resolver = Path("app/src/main/java/io/github/beakthoven/TrickyStoreOSS/KeyMintVersionResolver.kt")
           resolver.write_text("""/*
@@ -150,7 +102,7 @@ jobs:
           import android.util.Log
           import io.github.beakthoven.TrickyStoreOSS.logging.TAG
 
-          /** Android 12+ backend resolver, isolated so pre-KeyMint releases never load these classes. */
+          /** Resolves versions from Android 12+ native KeyMint and legacy Keymaster backends. */
           internal object KeyMintVersionResolver {
               fun resolve(securityLevel: Int): AndroidUtils.AttestationVersions? =
                   nativeKeyMintVersions(securityLevel) ?: compatKeymasterVersions(securityLevel)
@@ -211,69 +163,6 @@ jobs:
               }
           }
           """)
-
-          cert_gen = Path("app/src/main/java/io/github/beakthoven/TrickyStoreOSS/CertificateGen.kt")
-          replace_once(
-              cert_gen,
-              """    private fun buildAttestExtension(params: KeyGenParameters, uid: Int, securityLevel: Int = 1): Extension {
-                  val key = AndroidUtils.bootKey
-          """,
-              """    private fun buildAttestExtension(params: KeyGenParameters, uid: Int, securityLevel: Int = 1): Extension {
-                  val versions = AndroidUtils.attestationVersions(securityLevel)
-                  val attestationVersion = versions.attestation
-                  val keymasterVersion = versions.keymaster
-                  val key = AndroidUtils.bootKey
-          """,
-          )
-          cert_text = cert_gen.read_text()
-          attest_uses = cert_text.count("AndroidUtils.attestVersion")
-          keymaster_uses = cert_text.count("AndroidUtils.keymasterVersion")
-          if attest_uses != 4 or keymaster_uses != 1:
-              raise SystemExit(
-                  f"CertificateGen.kt: unexpected version references: "
-                  f"attest={attest_uses}, keymaster={keymaster_uses}"
-              )
-          cert_gen.write_text(
-              cert_text.replace("AndroidUtils.attestVersion", "attestationVersion")
-                  .replace("AndroidUtils.keymasterVersion", "keymasterVersion")
-          )
-
-          keymint_stub = Path("stub/src/main/java/android/hardware/security/keymint/IKeyMintDevice.java")
-          replace_once(
-              keymint_stub,
-              """    int getInterfaceVersion() throws RemoteException;
-          """,
-              """    KeyMintHardwareInfo getHardwareInfo() throws RemoteException;
-
-              int getInterfaceVersion() throws RemoteException;
-          """,
-          )
-
-          compat_stub = Path("stub/src/main/java/android/security/compat/IKeystoreCompatService.java")
-          compat_stub.parent.mkdir(parents=True, exist_ok=True)
-          compat_stub.write_text("""/*
-           * Copyright 2026 Dakkshesh <beakthoven@gmail.com>
-           * SPDX-License-Identifier: GPL-3.0-or-later
-           */
-
-          package android.security.compat;
-
-          import android.hardware.security.keymint.IKeyMintDevice;
-          import android.os.IBinder;
-          import android.os.IInterface;
-          import android.os.RemoteException;
-
-          /** Compile-only stub for the keystore2 legacy Keymaster compatibility service. */
-          public interface IKeystoreCompatService extends IInterface {
-              IKeyMintDevice getKeyMintDevice(int securityLevel) throws RemoteException;
-
-              abstract class Stub {
-                  public static IKeystoreCompatService asInterface(IBinder binder) {
-                      throw new UnsupportedOperationException("");
-                  }
-              }
-          }
-          """)
           PY
 
           git fetch origin main
@@ -281,11 +170,11 @@ jobs:
           git diff --check
           git diff --stat
 
-      - name: Commit verified resolver
+      - name: Commit resolver isolation
         shell: bash
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
-          git commit -m "fix: resolve attestation versions per security level"
+          git commit -m "refactor: isolate API 31 KeyMint resolver"
           git push origin HEAD:${{ github.head_ref }}
