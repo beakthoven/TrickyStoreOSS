@@ -12,7 +12,7 @@ jobs:
 
     steps:
       - name: Clone main branch
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: main
           fetch-depth: 0
@@ -41,7 +41,7 @@ jobs:
           echo "zip_url=$URL" >> $GITHUB_OUTPUT
 
       - name: Checkout changelog branch
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: changelog
           path: changelog-branch
