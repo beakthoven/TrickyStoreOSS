@@ -1,180 +1,131 @@
 name: Build
 
 on:
+  push:
+    branches: [ "main" ]
+    paths-ignore:
+      - '**.md'
+      - '.github/**'
+      - '!.github/workflows/**'
   pull_request:
-    branches: [main]
-    types: [synchronize]
-
-permissions:
-  contents: write
+    branches: [ "main" ]
+    paths-ignore:
+      - '**.md'
+      - '.github/**'
+      - '!.github/workflows/**'
+  workflow_dispatch:
 
 concurrency:
-  group: keymint-resolver-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  apply:
-    if: github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'fix/keymint-hal-version'
+  build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    outputs:
+      releaseName: ${{ steps.prepareArtifact.outputs.releaseName }}
+      debugName: ${{ steps.prepareArtifact.outputs.debugName }}
+
     steps:
-      - name: Check out PR branch
+      - name: Check out
         uses: actions/checkout@v7
         with:
-          ref: ${{ github.head_ref }}
+          submodules: "recursive"
           fetch-depth: 0
 
-      - name: Isolate Android 12+ resolver
-        shell: bash
+      - name: Setup Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 26
+
+      - name: Set up ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: ccache-${{ runner.os }}-${{ github.ref_name }}
+          restore-keys: |
+            ccache-${{ runner.os }}-${{ github.ref_name }}
+            ccache-${{ runner.os }}-
+            ccache-
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v6.2.0
+
+      - name: Build with Gradle
+        run: ./gradlew --parallel assembleRelease assembleDebug lintRelease --stacktrace
+
+      - name: Prepare artifact
+        id: prepareArtifact
         run: |
-          python3 - <<'PY'
-          from pathlib import Path
+          set -e
+          RELEASE_FILE=$(find out -name "*Release*.zip" | head -1)
+          DEBUG_FILE=$(find out -name "*Debug*.zip" | head -1)
 
-          path = Path("app/src/main/java/io/github/beakthoven/TrickyStoreOSS/AndroidUtils.kt")
-          text = path.read_text()
-          for line in (
-              "import android.hardware.security.keymint.IKeyMintDevice\n",
-              "import android.hardware.security.keymint.SecurityLevel\n",
-              "import android.os.ServiceManager\n",
-              "import android.security.compat.IKeystoreCompatService\n",
-          ):
-              if text.count(line) != 1:
-                  raise SystemExit(f"AndroidUtils.kt: expected one import: {line.strip()}")
-              text = text.replace(line, "", 1)
+          if [[ -z "$RELEASE_FILE" || -z "$DEBUG_FILE" ]]; then
+            echo "::error::Could not find release or debug files in out/"
+            ls -la out/ || echo "out/ directory does not exist"
+            exit 1
+          fi
 
-          start = text.index("    data class AttestationVersions")
-          end = text.index("    fun String.convertPatchLevel", start)
-          replacement = """    data class AttestationVersions(val attestation: Int, val keymaster: Int)
+          echo "releaseName=$(basename "$RELEASE_FILE" .zip)" >> "$GITHUB_OUTPUT"
+          echo "debugName=$(basename "$DEBUG_FILE" .zip)" >> "$GITHUB_OUTPUT"
+          echo "releaseFile=$RELEASE_FILE" >> "$GITHUB_OUTPUT"
+          echo "debugFile=$DEBUG_FILE" >> "$GITHUB_OUTPUT"
 
-              private val resolvedVersions = ConcurrentHashMap<Int, AttestationVersions>()
+      - name: Upload release
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.prepareArtifact.outputs.releaseName }}
+          path: ${{ steps.prepareArtifact.outputs.releaseFile }}
+          retention-days: 30
+          archive: false
 
-              private fun cachedTeeVersions(securityLevel: Int): AttestationVersions? {
-                  // android.hardware.security.keymint.SecurityLevel.TRUSTED_ENVIRONMENT
-                  if (securityLevel != 1) return null
-                  val data = CachedAttestData ?: return null
-                  val attestation = data.attestVersion ?: return null
-                  val keymaster = data.keymasterVersion ?: return null
-                  return AttestationVersions(attestation, keymaster)
-              }
+      - name: Upload debug
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.prepareArtifact.outputs.debugName }}
+          path: ${{ steps.prepareArtifact.outputs.debugFile }}
+          retention-days: 7
+          archive: false
 
-              private fun keymasterVersionForAttestation(attestationVersion: Int): Int =
-                  when (attestationVersion) {
-                      1 -> 2
-                      2 -> 3
-                      3 -> 4
-                      4 -> 41
-                      else -> attestationVersion
-                  }
+      - name: Upload release mappings
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-mappings-${{ github.run_number }}
+          path: "./app/build/outputs/mapping/release"
+          retention-days: 30
+          compression-level: 9
 
-              fun attestationVersions(securityLevel: Int): AttestationVersions {
-                  resolvedVersions[securityLevel]?.let { return it }
-
-                  val platformVersions =
-                      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                          KeyMintVersionResolver.resolve(securityLevel)
-                      } else {
-                          null
-                      }
-                  val exact = platformVersions ?: cachedTeeVersions(securityLevel)
-                  if (exact != null) {
-                      resolvedVersions.putIfAbsent(securityLevel, exact)
-                      return resolvedVersions[securityLevel] ?: exact
-                  }
-
-                  val attestation = attestVersionMap[Build.VERSION.SDK_INT] ?: 500
-                  return AttestationVersions(attestation, keymasterVersionForAttestation(attestation))
-              }
-
-          """
-          path.write_text(text[:start] + replacement + text[end:])
-
-          resolver = Path("app/src/main/java/io/github/beakthoven/TrickyStoreOSS/KeyMintVersionResolver.kt")
-          resolver.write_text("""/*
-           * Copyright 2026 Dakkshesh <beakthoven@gmail.com>
-           * SPDX-License-Identifier: GPL-3.0-or-later
-           */
-
-          package io.github.beakthoven.TrickyStoreOSS
-
-          import android.hardware.security.keymint.IKeyMintDevice
-          import android.hardware.security.keymint.SecurityLevel
-          import android.os.ServiceManager
-          import android.security.compat.IKeystoreCompatService
-          import android.util.Log
-          import io.github.beakthoven.TrickyStoreOSS.logging.TAG
-
-          /** Resolves versions from Android 12+ native KeyMint and legacy Keymaster backends. */
-          internal object KeyMintVersionResolver {
-              fun resolve(securityLevel: Int): AndroidUtils.AttestationVersions? =
-                  nativeKeyMintVersions(securityLevel) ?: compatKeymasterVersions(securityLevel)
-
-              private fun keyMintInstance(securityLevel: Int): String? =
-                  when (securityLevel) {
-                      SecurityLevel.TRUSTED_ENVIRONMENT -> "default"
-                      SecurityLevel.STRONGBOX -> "strongbox"
-                      else -> null
-                  }
-
-              private fun nativeKeyMintVersions(securityLevel: Int): AndroidUtils.AttestationVersions? {
-                  val instance = keyMintInstance(securityLevel) ?: return null
-                  val serviceName = "${IKeyMintDevice.DESCRIPTOR}/$instance"
-                  val binder = ServiceManager.checkService(serviceName) ?: return null
-
-                  return runCatching {
-                          val keyMint = IKeyMintDevice.Stub.asInterface(binder)
-                          val interfaceVersion = keyMint.interfaceVersion
-                          require(interfaceVersion > 0) { "Invalid KeyMint interface version: $interfaceVersion" }
-                          val version = Math.multiplyExact(interfaceVersion, 100)
-                          AndroidUtils.AttestationVersions(version, version)
-                      }
-                      .onSuccess { versions -> Log.i(TAG, "Resolved $serviceName versions: $versions") }
-                      .onFailure { Log.w(TAG, "Failed to query $serviceName interface version", it) }
-                      .getOrNull()
-              }
-
-              private fun legacyKeymasterVersions(versionNumber: Int): AndroidUtils.AttestationVersions? =
-                  when (versionNumber) {
-                      20 -> AndroidUtils.AttestationVersions(1, 2)
-                      30 -> AndroidUtils.AttestationVersions(2, 3)
-                      40 -> AndroidUtils.AttestationVersions(3, 4)
-                      41 -> AndroidUtils.AttestationVersions(4, 41)
-                      else -> null
-                  }
-
-              private fun compatKeymasterVersions(securityLevel: Int): AndroidUtils.AttestationVersions? {
-                  if (keyMintInstance(securityLevel) == null) return null
-                  val serviceName = "android.security.compat"
-                  val binder = ServiceManager.checkService(serviceName) ?: return null
-
-                  return runCatching {
-                          val compat = IKeystoreCompatService.Stub.asInterface(binder)
-                          val keyMint = compat.getKeyMintDevice(securityLevel)
-                          val hardwareInfo = keyMint.hardwareInfo
-                          require(hardwareInfo.securityLevel == securityLevel) {
-                              "Compat KeyMint security level ${hardwareInfo.securityLevel}, requested $securityLevel"
-                          }
-                          legacyKeymasterVersions(hardwareInfo.versionNumber)
-                              ?: error("Unsupported legacy Keymaster version: ${hardwareInfo.versionNumber}")
-                      }
-                      .onSuccess { versions ->
-                          Log.i(TAG, "Resolved $serviceName level=$securityLevel versions: $versions")
-                      }
-                      .onFailure { Log.w(TAG, "Failed to query $serviceName level=$securityLevel", it) }
-                      .getOrNull()
-              }
-          }
-          """)
-          PY
-
-          git fetch origin main
-          git checkout origin/main -- .github/workflows/build.yml
-          git diff --check
-          git diff --stat
-
-      - name: Commit resolver isolation
-        shell: bash
+      - name: Summary
+        if: always()
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A
-          git commit -m "refactor: isolate API 31 KeyMint resolver"
-          git push origin HEAD:${{ github.head_ref }}
+          echo "## Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "- **Status**: ${{ job.status }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Gradle Tasks**: assembleRelease, assembleDebug, lintRelease" >> $GITHUB_STEP_SUMMARY
+          if [[ "${{ job.status }}" == "success" ]]; then
+            echo "- **Release Artifact**: ${{ steps.prepareArtifact.outputs.releaseName }}" >> $GITHUB_STEP_SUMMARY
+            echo "- **Debug Artifact**: ${{ steps.prepareArtifact.outputs.debugName }}" >> $GITHUB_STEP_SUMMARY
+          fi
+
+  dependency-submission:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+    permissions:
+      contents: write
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7
+        with:
+          submodules: "recursive"
+
+      - name: Setup Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 26
+
+      - name: Submit dependency graph
+        uses: gradle/actions/dependency-submission@v6.2.0

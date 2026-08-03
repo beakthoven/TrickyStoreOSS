@@ -5,13 +5,9 @@
 
 package io.github.beakthoven.TrickyStoreOSS
 
-import android.hardware.security.keymint.IKeyMintDevice
-import android.hardware.security.keymint.SecurityLevel
 import android.os.Build
-import android.os.ServiceManager
 import android.os.SystemProperties
 import android.security.KeyStore2
-import android.security.compat.IKeystoreCompatService
 import android.security.keystore.KeyStoreManager
 import android.util.Log
 import io.github.beakthoven.TrickyStoreOSS.AttestUtils.CachedAttestData
@@ -230,67 +226,9 @@ object AndroidUtils {
 
     private val resolvedVersions = ConcurrentHashMap<Int, AttestationVersions>()
 
-    private fun keyMintInstance(securityLevel: Int): String? =
-        when (securityLevel) {
-            SecurityLevel.TRUSTED_ENVIRONMENT -> "default"
-            SecurityLevel.STRONGBOX -> "strongbox"
-            else -> null
-        }
-
-    private fun nativeKeyMintVersions(securityLevel: Int): AttestationVersions? {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return null
-        val instance = keyMintInstance(securityLevel) ?: return null
-        val serviceName = "${IKeyMintDevice.DESCRIPTOR}/$instance"
-        val binder = ServiceManager.checkService(serviceName) ?: return null
-
-        return runCatching {
-                val keyMint = IKeyMintDevice.Stub.asInterface(binder)
-                val interfaceVersion = keyMint.interfaceVersion
-                require(interfaceVersion > 0) { "Invalid KeyMint interface version: $interfaceVersion" }
-                val version = Math.multiplyExact(interfaceVersion, 100)
-                AttestationVersions(version, version)
-            }
-            .onSuccess { versions ->
-                Log.i(TAG, "Resolved $serviceName versions: $versions")
-            }
-            .onFailure { Log.w(TAG, "Failed to query $serviceName interface version", it) }
-            .getOrNull()
-    }
-
-    private fun legacyKeymasterVersions(versionNumber: Int): AttestationVersions? =
-        when (versionNumber) {
-            20 -> AttestationVersions(1, 2)
-            30 -> AttestationVersions(2, 3)
-            40 -> AttestationVersions(3, 4)
-            41 -> AttestationVersions(4, 41)
-            else -> null
-        }
-
-    private fun compatKeymasterVersions(securityLevel: Int): AttestationVersions? {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return null
-        if (keyMintInstance(securityLevel) == null) return null
-
-        val serviceName = "android.security.compat"
-        val binder = ServiceManager.checkService(serviceName) ?: return null
-        return runCatching {
-                val compat = IKeystoreCompatService.Stub.asInterface(binder)
-                val keyMint = compat.getKeyMintDevice(securityLevel)
-                val hardwareInfo = keyMint.hardwareInfo
-                require(hardwareInfo.securityLevel == securityLevel) {
-                    "Compat KeyMint security level ${hardwareInfo.securityLevel}, requested $securityLevel"
-                }
-                legacyKeymasterVersions(hardwareInfo.versionNumber)
-                    ?: error("Unsupported legacy Keymaster version: ${hardwareInfo.versionNumber}")
-            }
-            .onSuccess { versions ->
-                Log.i(TAG, "Resolved $serviceName level=$securityLevel versions: $versions")
-            }
-            .onFailure { Log.w(TAG, "Failed to query $serviceName level=$securityLevel", it) }
-            .getOrNull()
-    }
-
     private fun cachedTeeVersions(securityLevel: Int): AttestationVersions? {
-        if (securityLevel != SecurityLevel.TRUSTED_ENVIRONMENT) return null
+        // android.hardware.security.keymint.SecurityLevel.TRUSTED_ENVIRONMENT
+        if (securityLevel != 1) return null
         val data = CachedAttestData ?: return null
         val attestation = data.attestVersion ?: return null
         val keymaster = data.keymasterVersion ?: return null
@@ -309,10 +247,13 @@ object AndroidUtils {
     fun attestationVersions(securityLevel: Int): AttestationVersions {
         resolvedVersions[securityLevel]?.let { return it }
 
-        val exact =
-            nativeKeyMintVersions(securityLevel)
-                ?: compatKeymasterVersions(securityLevel)
-                ?: cachedTeeVersions(securityLevel)
+        val platformVersions =
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                KeyMintVersionResolver.resolve(securityLevel)
+            } else {
+                null
+            }
+        val exact = platformVersions ?: cachedTeeVersions(securityLevel)
         if (exact != null) {
             resolvedVersions.putIfAbsent(securityLevel, exact)
             return resolvedVersions[securityLevel] ?: exact
