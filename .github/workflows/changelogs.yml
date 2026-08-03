@@ -11,34 +11,32 @@ jobs:
       contents: write
 
     steps:
-      - name: Clone main branch
-        uses: actions/checkout@v7
-        with:
-          ref: main
-          fetch-depth: 0
-
-      - name: Calculate version code
-        id: vercode
-        run: |
-          echo "versionCode=$(git rev-list --count HEAD)" >> $GITHUB_OUTPUT
-
       - name: Fetch release metadata
         id: release
         env:
           ASSETS: ${{ toJson(github.event.release.assets) }}
+          TAG: ${{ github.event.release.tag_name }}
+          BODY: ${{ github.event.release.body }}
         run: |
-          echo "tag=${{ github.event.release.tag_name }}" >> $GITHUB_OUTPUT
-          echo "notes<<EOF" >> $GITHUB_OUTPUT
-          echo "${{ github.event.release.body }}" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
           URL=$(echo "$ASSETS" | jq -r '.[] | select(.name | endswith("Release.zip")) | .browser_download_url' | head -n1)
           if [ -z "$URL" ]; then
-            echo "::error::Missing .zip asset in release uploads."
+            echo "::error::Missing Release.zip asset in release."
             echo "$ASSETS" | jq -r '.[].name'
             exit 1
           fi
-          echo "zip_url=$URL" >> $GITHUB_OUTPUT
+          echo "zip_url=$URL" >> "$GITHUB_OUTPUT"
+
+          # Read versionCode from the shipped module.prop so it never drifts
+          # from the value baked in at build time.
+          curl -fsSL "$URL" -o release.zip
+          VERSION_CODE=$(unzip -p release.zip module.prop | sed -n 's/^versionCode=//p')
+          if [ -z "$VERSION_CODE" ]; then
+            echo "::error::Could not read versionCode from release zip module.prop"
+            exit 1
+          fi
+          echo "version_code=$VERSION_CODE" >> "$GITHUB_OUTPUT"
 
       - name: Checkout changelog branch
         uses: actions/checkout@v7
@@ -47,19 +45,24 @@ jobs:
           path: changelog-branch
 
       - name: Write changelog and JSON
+        env:
+          BODY: ${{ github.event.release.body }}
+          TAG: ${{ steps.release.outputs.tag }}
+          VERSION_CODE: ${{ steps.release.outputs.version_code }}
+          URL: ${{ steps.release.outputs.zip_url }}
+          REPO: ${{ github.repository }}
         run: |
           cd changelog-branch
 
-          echo "${{ steps.release.outputs.notes }}" > changelog.md
+          printf '%s\n' "$BODY" > changelog.md
 
-          cat <<EOF > update.json
-          {
-            "version": "${{ steps.release.outputs.tag }}",
-            "versionCode": ${{ steps.vercode.outputs.versionCode }},
-            "zipUrl": "${{ steps.release.outputs.zip_url }}",
-            "changelog": "https://raw.githubusercontent.com/beakthoven/TrickyStoreOSS/changelog/changelog.md"
-          }
-          EOF
+          CHANGELOG_URL="https://raw.githubusercontent.com/${REPO}/changelog/changelog.md"
+          jq -n \
+            --arg v "$TAG" \
+            --argjson vc "$VERSION_CODE" \
+            --arg z "$URL" \
+            --arg c "$CHANGELOG_URL" \
+            '{version:$v, versionCode:$vc, zipUrl:$z, changelog:$c}' > update.json
 
       - name: Commit and push updates
         run: |
