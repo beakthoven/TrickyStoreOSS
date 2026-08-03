@@ -5,7 +5,9 @@
 
 package io.github.beakthoven.TrickyStoreOSS
 
+import android.hardware.security.keymint.IKeyMintDevice
 import android.os.Build
+import android.os.ServiceManager
 import android.os.SystemProperties
 import android.security.KeyStore2
 import android.security.keystore.KeyStoreManager
@@ -221,8 +223,34 @@ object AndroidUtils {
             Build.VERSION_CODES.CINNAMON_BUN to 500, // KeyMint 5.0
         )
 
+    @Volatile private var cachedKeyMintAttestVersion: Int? = null
+
+    private fun getKeyMintAttestVersion(): Int? {
+        cachedKeyMintAttestVersion?.let { return it }
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return null
+
+        val serviceName = "${IKeyMintDevice.DESCRIPTOR}/default"
+        val binder = ServiceManager.checkService(serviceName) ?: return null
+        return runCatching {
+                val keyMint = IKeyMintDevice.Stub.asInterface(binder)
+                val interfaceVersion = keyMint.interfaceVersion
+                require(interfaceVersion > 0) { "Invalid KeyMint interface version: $interfaceVersion" }
+                interfaceVersion * 100
+            }
+            .onSuccess { version ->
+                cachedKeyMintAttestVersion = version
+                Log.i(TAG, "Using KeyMint HAL version from $serviceName: $version")
+            }
+            .onFailure { Log.w(TAG, "Failed to query KeyMint HAL version from $serviceName", it) }
+            .getOrNull()
+    }
+
     val attestVersion: Int
-        get() = CachedAttestData?.attestVersion ?: attestVersionMap[Build.VERSION.SDK_INT] ?: 500
+        get() =
+            CachedAttestData?.attestVersion
+                ?: getKeyMintAttestVersion()
+                ?: attestVersionMap[Build.VERSION.SDK_INT]
+                ?: 500
 
     val keymasterVersion: Int
         get() = CachedAttestData?.keymasterVersion ?: if (attestVersion == 4) 41 else attestVersion
