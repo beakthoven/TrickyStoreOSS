@@ -1,11 +1,18 @@
+# Google apps
 com.android.vending
 com.google.android.gms
+
+# Key Attestation apps
 io.github.vvb2060.keyattestation
+io.github.qwq233.keyattestation
+
+# Environment Test apps
 io.github.vvb2060.mahoshojo
 icu.nullptr.nativetest
+com.android.nativetest
 com.reveny.nativecheck
 com.zhenxi.hunter
-io.github.qwq233.keyattestation
-com.android.nativetest
-io.liankong.riskdetector
 luna.safe.luna
+io.liankong.riskdetector
+com.studio.duckdetector
+com.eltavine.duckdetector
