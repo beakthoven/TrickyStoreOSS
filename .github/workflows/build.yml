@@ -93,7 +93,7 @@ jobs:
       - name: Upload release
         if: success()
         id: release
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ steps.prepareArtifact.outputs.releaseName }}
           path: "./module-release/*"
@@ -103,7 +103,7 @@ jobs:
       - name: Upload debug
         if: success()
         id: debug
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ steps.prepareArtifact.outputs.debugName }}
           path: "./module-debug/*"
@@ -112,7 +112,7 @@ jobs:
 
       - name: Upload release mappings
         if: success()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-mappings-${{ github.run_number }}
           path: "./app/build/outputs/mapping/release"
