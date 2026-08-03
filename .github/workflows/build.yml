@@ -57,7 +57,7 @@ jobs:
         uses: gradle/actions/setup-gradle@v6.2.0
 
       - name: Build with Gradle
-        run: ./gradlew --parallel assembleRelease assembleDebug --stacktrace
+        run: ./gradlew --parallel assembleRelease assembleDebug lintRelease --stacktrace
 
       - name: Prepare artifact
         id: prepareArtifact
@@ -106,7 +106,7 @@ jobs:
         run: |
           echo "## Build Summary" >> $GITHUB_STEP_SUMMARY
           echo "- **Status**: ${{ job.status }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Gradle Tasks**: assembleRelease, assembleDebug" >> $GITHUB_STEP_SUMMARY
+          echo "- **Gradle Tasks**: assembleRelease, assembleDebug, lintRelease" >> $GITHUB_STEP_SUMMARY
           if [[ "${{ job.status }}" == "success" ]]; then
             echo "- **Release Artifact**: ${{ steps.prepareArtifact.outputs.releaseName }}" >> $GITHUB_STEP_SUMMARY
             echo "- **Debug Artifact**: ${{ steps.prepareArtifact.outputs.debugName }}" >> $GITHUB_STEP_SUMMARY
