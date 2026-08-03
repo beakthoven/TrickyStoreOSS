@@ -26,11 +26,11 @@ jobs:
       id-token: write
       attestations: write
       contents: read
-    
+
     outputs:
       releaseName: ${{ steps.prepareArtifact.outputs.releaseName }}
       debugName: ${{ steps.prepareArtifact.outputs.debugName }}
-    
+
     steps:
       - name: Check out
         uses: actions/checkout@v7
@@ -43,7 +43,6 @@ jobs:
         with:
           distribution: temurin
           java-version: 26
-          cache: 'gradle'
 
       - name: Set up ccache
         uses: hendrikmuhs/ccache-action@v1.2
@@ -58,60 +57,43 @@ jobs:
         uses: gradle/actions/setup-gradle@v6.2.0
 
       - name: Build with Gradle
-        run: |
-          chmod +x ./gradlew
-          ./gradlew --parallel assembleRelease assembleDebug --stacktrace
+        run: ./gradlew --parallel assembleRelease assembleDebug --stacktrace
 
       - name: Prepare artifact
-        if: success()
         id: prepareArtifact
         run: |
           set -e
           RELEASE_FILE=$(find out -name "*Release*.zip" | head -1)
           DEBUG_FILE=$(find out -name "*Debug*.zip" | head -1)
-          
+
           if [[ -z "$RELEASE_FILE" || -z "$DEBUG_FILE" ]]; then
-            echo "Error: Could not find release or debug files in out/"
-            echo "Contents of out/ directory:"
+            echo "::error::Could not find release or debug files in out/"
             ls -la out/ || echo "out/ directory does not exist"
             exit 1
           fi
-          
-          # Extract names
-          RELEASE_NAME=$(basename "$RELEASE_FILE" .zip)
-          DEBUG_NAME=$(basename "$DEBUG_FILE" .zip)
-          
-          echo "releaseName=$RELEASE_NAME" >> $GITHUB_OUTPUT
-          echo "debugName=$DEBUG_NAME" >> $GITHUB_OUTPUT
 
-          mkdir -p module-release module-debug
-          unzip -q "$RELEASE_FILE" -d module-release
-          unzip -q "$DEBUG_FILE" -d module-debug
-          echo "  Release: $RELEASE_NAME"
-          echo "  Debug: $DEBUG_NAME"
+          echo "releaseName=$(basename "$RELEASE_FILE" .zip)" >> "$GITHUB_OUTPUT"
+          echo "debugName=$(basename "$DEBUG_FILE" .zip)" >> "$GITHUB_OUTPUT"
+          echo "releaseFile=$RELEASE_FILE" >> "$GITHUB_OUTPUT"
+          echo "debugFile=$DEBUG_FILE" >> "$GITHUB_OUTPUT"
 
       - name: Upload release
-        if: success()
-        id: release
         uses: actions/upload-artifact@v7
         with:
           name: ${{ steps.prepareArtifact.outputs.releaseName }}
-          path: "./module-release/*"
+          path: ${{ steps.prepareArtifact.outputs.releaseFile }}
           retention-days: 30
-          compression-level: 6
+          compression-level: 0
 
       - name: Upload debug
-        if: success()
-        id: debug
         uses: actions/upload-artifact@v7
         with:
           name: ${{ steps.prepareArtifact.outputs.debugName }}
-          path: "./module-debug/*"
+          path: ${{ steps.prepareArtifact.outputs.debugFile }}
           retention-days: 7
-          compression-level: 6
+          compression-level: 0
 
       - name: Upload release mappings
-        if: success()
         uses: actions/upload-artifact@v7
         with:
           name: release-mappings-${{ github.run_number }}
