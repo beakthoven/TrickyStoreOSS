@@ -150,9 +150,14 @@ androidComponents {
         tasks.register("prepareModuleFiles${capitalized}") {
             dependsOn("copyFiles${capitalized}")
             val sourceDir = project.rootDir.resolve("module")
+            val commitCount = gitCommitCount
+            val commitHash = gitCommitHash
+            val versionName = verName
+            val variant = variantName
+            val tempDirProvider = tempModuleDir
 
             doLast {
-                val tempDir = tempModuleDir.get().asFile
+                val tempDir = tempDirProvider.get().asFile
 
                 // Clean and create temp directory
                 tempDir.deleteRecursively()
@@ -175,8 +180,8 @@ androidComponents {
                 val content = sourceProp.readText()
                 val processedContent =
                     content
-                        .replace("REPLACEMEVERCODE", gitCommitCount.toString())
-                        .replace("REPLACEMEVER", "$verName ($gitCommitCount-$gitCommitHash-$variantName)")
+                        .replace("REPLACEMEVERCODE", commitCount.toString())
+                        .replace("REPLACEMEVER", "$versionName ($commitCount-$commitHash-$variant)")
                 destProp.writeText(processedContent)
             }
         }
