@@ -79,16 +79,6 @@ object PkgConfig {
         }
     }
 
-    private fun loadTEEStatus(root: File) {
-        val statusFile = File(root, TEE_STATUS_FILE)
-        if (statusFile.exists()) {
-            val line = statusFile.readText().trim()
-            teeBroken = line == "teeBroken=true"
-        } else {
-            teeBroken = null
-        }
-    }
-
     object ConfigObserver : FileObserver(root, CLOSE_WRITE or DELETE or MOVED_FROM or MOVED_TO) {
         override fun onEvent(event: Int, path: String?) {
             path ?: return
@@ -122,7 +112,6 @@ object PkgConfig {
         } else {
             updateKeyBox(keybox)
         }
-        storeTEEStatus(root)
         val patchFile = File(root, PATCHLEVEL_FILE)
         updatePatchLevel(if (patchFile.exists()) patchFile else null)
         ConfigObserver.startWatching()
@@ -162,7 +151,7 @@ object PkgConfig {
                     // PM gone: don't cache, so the next call retries
                     getPm()?.getPackagesForUid(callingUid) ?: return false
                 }
-            if (teeBroken == null) loadTEEStatus(root)
+            if (teeBroken == null) storeTEEStatus(root)
             for (pkg in ps) {
                 when (packageModes[pkg]) {
                     targetMode -> return true
