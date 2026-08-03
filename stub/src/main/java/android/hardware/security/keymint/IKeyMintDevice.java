@@ -13,6 +13,8 @@ import android.os.RemoteException;
 public interface IKeyMintDevice extends IInterface {
     String DESCRIPTOR = "android.hardware.security.keymint.IKeyMintDevice";
 
+    KeyMintHardwareInfo getHardwareInfo() throws RemoteException;
+
     int getInterfaceVersion() throws RemoteException;
 
     abstract class Stub {

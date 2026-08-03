@@ -337,6 +337,9 @@ object CertificateGen {
     }
 
     private fun buildAttestExtension(params: KeyGenParameters, uid: Int, securityLevel: Int = 1): Extension {
+        val versions = AndroidUtils.attestationVersions(securityLevel)
+        val attestationVersion = versions.attestation
+        val keymasterVersion = versions.keymaster
         val key = AndroidUtils.bootKey
         val hash = AndroidUtils.getBootHashFromProp()
         val rootOfTrust =
@@ -382,7 +385,7 @@ object CertificateGen {
         }
         teeSet(4, params.blockMode)
         teeSet(6, params.padding)
-        if (AndroidUtils.attestVersion >= 100) teeSet(203, params.mgfDigest)
+        if (attestationVersion >= 100) teeSet(203, params.mgfDigest)
         if (params.algorithm == Algorithm.EC && params.ecCurve != 0) teeTag(10, ASN1Integer(params.ecCurve.toLong()))
         if (params.algorithm == Algorithm.RSA && params.rsaPublicExponent != null)
             teeTag(200, ASN1Integer(params.rsaPublicExponent))
@@ -394,7 +397,7 @@ object CertificateGen {
         params.serialno?.let { teeTag(713, DEROctetString(it)) }
         params.imei1?.let { teeTag(714, DEROctetString(it)) }
         params.meid?.let { teeTag(715, DEROctetString(it)) }
-        if (AndroidUtils.attestVersion >= 300) params.imei2?.let { teeTag(723, DEROctetString(it)) }
+        if (attestationVersion >= 300) params.imei2?.let { teeTag(723, DEROctetString(it)) }
         tee.sortBy { (it as DERTaggedObject).tagNo }
 
         val sw = mutableListOf<ASN1Encodable>(DERTaggedObject(true, 701, creationDateTime))
@@ -404,14 +407,14 @@ object CertificateGen {
         if (params.usageCountLimit > 0) sw.add(DERTaggedObject(true, 405, ASN1Integer(params.usageCountLimit.toLong())))
         if (params.unlockedDeviceRequired == true) sw.add(DERTaggedObject(true, 509, DERNull.INSTANCE))
         if (applicationId != null) sw.add(DERTaggedObject(true, 709, applicationId))
-        if (AndroidUtils.attestVersion >= 400) sw.add(DERTaggedObject(true, 724, moduleHash))
+        if (attestationVersion >= 400) sw.add(DERTaggedObject(true, 724, moduleHash))
         sw.sortBy { (it as DERTaggedObject).tagNo }
 
         val keyDesc =
             arrayOf(
-                ASN1Integer(AndroidUtils.attestVersion.toLong()),
+                ASN1Integer(attestationVersion.toLong()),
                 ASN1Enumerated(securityLevel),
-                ASN1Integer(AndroidUtils.keymasterVersion.toLong()),
+                ASN1Integer(keymasterVersion.toLong()),
                 ASN1Enumerated(securityLevel),
                 DEROctetString(params.attestationChallenge ?: ByteArray(0)),
                 DEROctetString(uniqueId),
