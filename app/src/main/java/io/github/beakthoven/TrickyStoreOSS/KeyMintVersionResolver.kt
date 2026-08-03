@@ -7,12 +7,15 @@ package io.github.beakthoven.TrickyStoreOSS
 
 import android.hardware.security.keymint.IKeyMintDevice
 import android.hardware.security.keymint.SecurityLevel
+import android.os.Build
 import android.os.ServiceManager
 import android.security.compat.IKeystoreCompatService
 import android.util.Log
+import androidx.annotation.RequiresApi
 import io.github.beakthoven.TrickyStoreOSS.logging.TAG
 
 /** Resolves versions from Android 12+ native KeyMint and legacy Keymaster backends. */
+@RequiresApi(Build.VERSION_CODES.S)
 internal object KeyMintVersionResolver {
     fun resolve(securityLevel: Int): AndroidUtils.AttestationVersions? =
         nativeKeyMintVersions(securityLevel) ?: compatKeymasterVersions(securityLevel)
