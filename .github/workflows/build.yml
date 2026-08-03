@@ -101,6 +101,11 @@ jobs:
           retention-days: 30
           compression-level: 9
 
+      - name: Attest build provenance
+        uses: actions/attest@v4
+        with:
+          subject-path: out/*.zip
+
       - name: Summary
         if: always()
         run: |
@@ -111,3 +116,23 @@ jobs:
             echo "- **Release Artifact**: ${{ steps.prepareArtifact.outputs.releaseName }}" >> $GITHUB_STEP_SUMMARY
             echo "- **Debug Artifact**: ${{ steps.prepareArtifact.outputs.debugName }}" >> $GITHUB_STEP_SUMMARY
           fi
+
+  dependency-submission:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+    permissions:
+      contents: write
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7
+        with:
+          submodules: "recursive"
+
+      - name: Setup Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 26
+
+      - name: Submit dependency graph
+        uses: gradle/actions/dependency-submission@v6.2.0
