@@ -35,11 +35,13 @@ internal object KeyMintVersionResolver {
         return runCatching {
                 val keyMint = IKeyMintDevice.Stub.asInterface(binder)
                 val interfaceVersion = keyMint.interfaceVersion
-                require(interfaceVersion > 0) { "Invalid KeyMint interface version: $interfaceVersion" }
-                val version = Math.multiplyExact(interfaceVersion, 100)
+                if (interfaceVersion <= 0) return@runCatching null
+                val version = interfaceVersion * 100
                 AndroidUtils.AttestationVersions(version, version)
             }
-            .onSuccess { versions -> Log.i(TAG, "Resolved $serviceName versions: $versions") }
+            .onSuccess { versions ->
+                if (versions != null) Log.i(TAG, "Resolved $serviceName versions: $versions")
+            }
             .onFailure { Log.w(TAG, "Failed to query $serviceName interface version", it) }
             .getOrNull()
     }
