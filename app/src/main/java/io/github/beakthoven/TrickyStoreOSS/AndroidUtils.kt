@@ -5,6 +5,7 @@
 
 package io.github.beakthoven.TrickyStoreOSS
 
+import android.hardware.security.keymint.SecurityLevel
 import android.os.Build
 import android.os.SystemProperties
 import android.security.KeyStore2
@@ -227,8 +228,7 @@ object AndroidUtils {
     private val resolvedVersions = ConcurrentHashMap<Int, AttestationVersions>()
 
     private fun cachedTeeVersions(securityLevel: Int): AttestationVersions? {
-        // android.hardware.security.keymint.SecurityLevel.TRUSTED_ENVIRONMENT
-        if (securityLevel != 1) return null
+        if (securityLevel != SecurityLevel.TRUSTED_ENVIRONMENT) return null
         val data = CachedAttestData ?: return null
         val attestation = data.attestVersion ?: return null
         val keymaster = data.keymasterVersion ?: return null
@@ -236,13 +236,7 @@ object AndroidUtils {
     }
 
     private fun keymasterVersionForAttestation(attestationVersion: Int): Int =
-        when (attestationVersion) {
-            1 -> 2
-            2 -> 3
-            3 -> 4
-            4 -> 41
-            else -> attestationVersion
-        }
+        if (attestationVersion == 4) 41 else attestationVersion
 
     fun attestationVersions(securityLevel: Int): AttestationVersions {
         resolvedVersions[securityLevel]?.let { return it }
@@ -255,8 +249,8 @@ object AndroidUtils {
             }
         val exact = platformVersions ?: cachedTeeVersions(securityLevel)
         if (exact != null) {
-            resolvedVersions.putIfAbsent(securityLevel, exact)
-            return resolvedVersions[securityLevel] ?: exact
+            resolvedVersions[securityLevel] = exact
+            return exact
         }
 
         val attestation = attestVersionMap[Build.VERSION.SDK_INT] ?: 500
