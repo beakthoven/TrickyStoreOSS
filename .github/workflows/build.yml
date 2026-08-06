@@ -52,7 +52,7 @@ jobs:
             ccache-
 
       - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v6.2.0
+        uses: gradle/actions/setup-gradle@v6.3.0
 
       - name: Build with Gradle
         run: ./gradlew --parallel assembleRelease assembleDebug lintRelease --stacktrace
@@ -128,4 +128,4 @@ jobs:
           java-version: 26
 
       - name: Submit dependency graph
-        uses: gradle/actions/dependency-submission@v6.2.0
+        uses: gradle/actions/dependency-submission@v6.3.0
