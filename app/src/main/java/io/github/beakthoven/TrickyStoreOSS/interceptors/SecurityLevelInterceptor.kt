@@ -226,8 +226,16 @@ class SecurityLevelInterceptor(private val original: IKeystoreSecurityLevel, pri
                     forceForge -> {
                         val isSymmetric = kgp.algorithm == Algorithm.AES || kgp.algorithm == Algorithm.HMAC
                         if (isSymmetric) {
-                            val secretKey = CertificateGen.generateSecretKey(kgp) ?: return@runCatching
-                            return storeGeneratedKey(callingUid, keyDescriptor, kgp, null, secretKey, null, false)
+                            // Symmetric keys are never used for attestation, so forging them
+                            // gains nothing and breaks apps whose AES/HMAC operations don't
+                            // match the forged key's parameters (e.g. AES-GCM decrypt without
+                            // a digest tag -> KM_ERROR_UNSUPPORTED_DIGEST from authorizeOperation).
+                            // Forward to the real keystore instead.
+                            Log.i(
+                                TAG,
+                                "Forwarding symmetric key to real keystore (no forge): uid=$callingUid alias=${keyDescriptor.alias}",
+                            )
+                            return Continue
                         }
                         val pair =
                             CertificateGen.generateKeyPair(
