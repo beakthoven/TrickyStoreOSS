@@ -5,6 +5,7 @@
 
 package io.github.beakthoven.TrickyStoreOSS
 
+import android.hardware.security.keymint.SecurityLevel
 import android.os.Build
 import android.os.SystemProperties
 import android.security.KeyStore2
@@ -17,6 +18,7 @@ import java.io.File
 import java.security.MessageDigest
 import java.security.SecureRandom
 import java.time.LocalDate
+import java.util.concurrent.ConcurrentHashMap
 
 object AndroidUtils {
 
@@ -221,11 +223,39 @@ object AndroidUtils {
             Build.VERSION_CODES.CINNAMON_BUN to 500, // KeyMint 5.0
         )
 
-    val attestVersion: Int
-        get() = CachedAttestData?.attestVersion ?: attestVersionMap[Build.VERSION.SDK_INT] ?: 500
+    data class AttestationVersions(val attestation: Int, val keymaster: Int)
 
-    val keymasterVersion: Int
-        get() = CachedAttestData?.keymasterVersion ?: if (attestVersion == 4) 41 else attestVersion
+    private val resolvedVersions = ConcurrentHashMap<Int, AttestationVersions>()
+
+    private fun cachedTeeVersions(securityLevel: Int): AttestationVersions? {
+        if (securityLevel != SecurityLevel.TRUSTED_ENVIRONMENT) return null
+        val data = CachedAttestData ?: return null
+        val attestation = data.attestVersion ?: return null
+        val keymaster = data.keymasterVersion ?: return null
+        return AttestationVersions(attestation, keymaster)
+    }
+
+    private fun keymasterVersionForAttestation(attestationVersion: Int): Int =
+        if (attestationVersion == 4) 41 else attestationVersion
+
+    fun attestationVersions(securityLevel: Int): AttestationVersions {
+        resolvedVersions[securityLevel]?.let { return it }
+
+        val platformVersions =
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                KeyMintVersionResolver.resolve(securityLevel)
+            } else {
+                null
+            }
+        val exact = platformVersions ?: cachedTeeVersions(securityLevel)
+        if (exact != null) {
+            resolvedVersions[securityLevel] = exact
+            return exact
+        }
+
+        val attestation = attestVersionMap[Build.VERSION.SDK_INT] ?: 500
+        return AttestationVersions(attestation, keymasterVersionForAttestation(attestation))
+    }
 
     fun String.convertPatchLevel(isLong: Boolean): Int {
         val raw = runCatching {
