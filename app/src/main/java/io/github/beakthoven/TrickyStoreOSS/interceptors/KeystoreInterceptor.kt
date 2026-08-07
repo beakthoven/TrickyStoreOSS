@@ -228,7 +228,6 @@ object KeystoreInterceptor : BaseKeystoreInterceptor() {
     ): Result {
         if (target != keystore || code != getTransaction || reply == null) return Skip
         if (reply.hasException()) return Skip
-        val p = Parcel.obtain()
         Log.d(
             TAG,
             "intercept post $target uid=$callingUid pid=$callingPid dataSz=${data.dataSize()} replySz=${reply.dataSize()}",
@@ -248,11 +247,9 @@ object KeystoreInterceptor : BaseKeystoreInterceptor() {
                     Log.i(TAG, "Hacked CA certificate chain for uid=$callingUid")
                     return createByteArrayReply(response)
                 }
-                else -> p.recycle()
             }
         } catch (t: Throwable) {
             Log.e(TAG, "failed to hack certificate chain of uid=$callingUid pid=$callingPid!", t)
-            p.recycle()
         }
         return Skip
     }

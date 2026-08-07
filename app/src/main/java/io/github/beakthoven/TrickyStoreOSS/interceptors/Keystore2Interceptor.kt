@@ -427,7 +427,6 @@ object Keystore2Interceptor : BaseKeystoreInterceptor() {
         }
 
         if (reply.hasException()) return Skip
-        val p = Parcel.obtain()
         Log.d(
             TAG,
             "intercept post $target uid=$callingUid pid=$callingPid dataSz=${data.dataSize()} replySz=${reply.dataSize()}",
@@ -455,11 +454,7 @@ object Keystore2Interceptor : BaseKeystoreInterceptor() {
                         if (cachedKey != null) SecurityLevelInterceptor.patchedResponses[cachedKey] = response
                         Log.d(TAG, "Hacked certificate for uid=$callingUid")
                         return createTypedObjectReply(response)
-                    } else {
-                        p.recycle()
                     }
-                } else {
-                    p.recycle()
                 }
             } catch (t: Throwable) {
                 Log.w(
@@ -467,7 +462,6 @@ object Keystore2Interceptor : BaseKeystoreInterceptor() {
                     "getKeyEntry post-hook chain patch failed for uid=$callingUid pid=$callingPid; serving unpatched real chain",
                     t,
                 )
-                p.recycle()
             }
         }
         return Skip
