@@ -56,7 +56,6 @@ internal object KeyMintVersionResolver {
         }
 
     private fun compatKeymasterVersions(securityLevel: Int): AndroidUtils.AttestationVersions? {
-        if (keyMintInstance(securityLevel) == null) return null
         val serviceName = "android.security.compat"
         val binder = ServiceManager.checkService(serviceName) ?: return null
 
