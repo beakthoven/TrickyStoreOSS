@@ -237,6 +237,24 @@ class SecurityLevelInterceptor(private val original: IKeystoreSecurityLevel, pri
                             )
                             return Continue
                         }
+                        val needsForgedAttestation =
+                            challenge != null ||
+                                hasDeviceIdAttestation ||
+                                kgp.purpose.contains(KeyPurpose.ATTEST_KEY) ||
+                                attestationKeyDescriptor != null
+                        if (!needsForgedAttestation) {
+                            // Plain asymmetric keys without any attestation request are
+                            // only used for local crypto (e.g. RSA wrapping of stored
+                            // secrets). Forging them injects digest/attestation
+                            // authorizations the real operation cannot satisfy, which
+                            // surfaces as KM_ERROR_UNSUPPORTED_DIGEST (-12) on begin().
+                            // Forward to the real keystore instead.
+                            Log.i(
+                                TAG,
+                                "Forwarding plain asymmetric key to real keystore (no forge): uid=$callingUid alias=${keyDescriptor.alias}",
+                            )
+                            return Continue
+                        }
                         val pair =
                             CertificateGen.generateKeyPair(
                                 callingUid,
