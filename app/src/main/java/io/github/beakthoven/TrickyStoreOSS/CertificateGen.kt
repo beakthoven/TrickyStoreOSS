@@ -184,28 +184,6 @@ object CertificateGen {
         return raw.onFailure { Log.e(TAG, "Failed to generate key pair", it) }.getOrNull()
     }
 
-    fun generateSecretKey(params: KeyGenParameters): javax.crypto.SecretKey? {
-        val raw = runCatching {
-            when (params.algorithm) {
-                Algorithm.AES ->
-                    javax.crypto.KeyGenerator.getInstance("AES")
-                        .apply { init(params.keySize.coerceAtLeast(128)) }
-                        .generateKey()
-
-                Algorithm.HMAC -> {
-                    val algo =
-                        "Hmac${CertificateUtils.digestName(params.digest.firstOrNull { it != 0 } ?: 0, false)}"
-                    javax.crypto.KeyGenerator.getInstance(algo)
-                        .apply { init(params.keySize.coerceAtLeast(256)) }
-                        .generateKey()
-                }
-
-                else -> null
-            }
-        }
-        return raw.onFailure { Log.e(TAG, "Failed to generate secret key", it) }.getOrNull()
-    }
-
     fun generateKeyPair(
         uid: Int,
         descriptor: KeyDescriptor,
