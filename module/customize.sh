@@ -14,8 +14,7 @@ if [ "$KSU" = true ] && [ "$KSU_VER_CODE" -lt 10670 ]; then
 fi
 
 # --- Version Info ---
-VERSION=$(grep_prop version "${TMPDIR}/module.prop")
-ui_print "- Installing Tricky Store OSS $VERSION"
+ui_print "- Installing Tricky Store OSS $(grep_prop version "$TMPDIR/module.prop")"
 ui_print ""
 
 # --- Architecture Handling ---
@@ -47,15 +46,12 @@ install_file() {
 }
 
 # --- Remove any conflicting modules ---
-if [ -d /data/adb/modules/oh_my_keymint ]; then
-    touch /data/adb/modules/oh_my_keymint/remove
-    ui_print "! Oh My KeyMint module will be removed on next reboot"
-fi
-
-if [ -d /data/adb/modules/teesim ]; then
-    touch /data/adb/modules/teesim/remove
-    ui_print "! TEE Simulator module will be removed on next reboot"
-fi
+for remove_id in oh_my_keymint teesim; do
+    if [ -d "/data/adb/modules/$remove_id" ]; then
+        touch "/data/adb/modules/$remove_id/remove"
+        ui_print "! $(grep_prop name "/data/adb/modules/$remove_id/module.prop") module will be removed on next reboot"
+    fi
+done
 
 # --- Installation ---
 ui_print "- Extracting module files"
