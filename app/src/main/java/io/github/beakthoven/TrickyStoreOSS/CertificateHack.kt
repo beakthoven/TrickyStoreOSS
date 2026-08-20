@@ -215,7 +215,8 @@ object CertificateHack {
             // stripped only when overridden or omitted; device_default (null) keeps the
             // original, correctly-sourced value (e.g. boot from the boot image header).
             when (obj.tagNo) {
-                704, 705 -> continue
+                704,
+                705 -> continue
                 706 -> if (osPatch != null) continue
                 718 -> if (vendorPatch != null) continue
                 719 -> if (bootPatch != null) continue

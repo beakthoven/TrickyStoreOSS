@@ -464,7 +464,10 @@ object Keystore2Interceptor : BaseKeystoreInterceptor() {
                 if (!SecurityLevelInterceptor.isPatchedKey(key)) return@runCatching
                 SecurityLevelInterceptor.grants[grantDescriptor.nspace] =
                     SecurityLevelInterceptor.GrantInfo(callingUid, granteeUid, key, accessVector)
-                Log.i(TAG, "grant: tracked real grantId=${grantDescriptor.nspace} alias=${key.alias} grantee=$granteeUid")
+                Log.i(
+                    TAG,
+                    "grant: tracked real grantId=${grantDescriptor.nspace} alias=${key.alias} grantee=$granteeUid",
+                )
             }
             raw.onFailure { Log.e(TAG, "grant post-hook tracking failed", it) }
             return Skip

@@ -130,8 +130,7 @@ object AttestUtils {
                         }
                     }
                     705 -> { // Parse OS Version
-                        attestOSVersion =
-                            ASN1Integer.getInstance(tagged.baseObject.toASN1Primitive()).value.toInt()
+                        attestOSVersion = ASN1Integer.getInstance(tagged.baseObject.toASN1Primitive()).value.toInt()
                     }
                 }
             }

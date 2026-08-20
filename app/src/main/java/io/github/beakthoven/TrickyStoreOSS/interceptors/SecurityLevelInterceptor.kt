@@ -209,7 +209,10 @@ class SecurityLevelInterceptor(private val original: IKeystoreSecurityLevel, pri
                     return Skip
                 }
                 if (params.any { it.tag == Tag.CREATION_DATETIME }) {
-                    Log.i(TAG, "Rejecting caller-supplied CREATION_DATETIME uid=$callingUid alias=${keyDescriptor.alias}")
+                    Log.i(
+                        TAG,
+                        "Rejecting caller-supplied CREATION_DATETIME uid=$callingUid alias=${keyDescriptor.alias}",
+                    )
                     return errorReply(ResponseCode.INVALID_ARGUMENT, "CREATION_DATETIME is auto-injected")
                 }
                 val hasDeviceIdAttestation = params.any {
@@ -219,11 +222,15 @@ class SecurityLevelInterceptor(private val original: IKeystoreSecurityLevel, pri
                         it.tag == Tag.ATTESTATION_ID_SECOND_IMEI ||
                         it.tag == Tag.DEVICE_UNIQUE_ATTESTATION
                 }
-                if (hasDeviceIdAttestation &&
-                    !PkgConfig.hasPermissionForUid(callingUid, "android.permission.READ_PRIVILEGED_PHONE_STATE")
+                if (
+                    hasDeviceIdAttestation &&
+                        !PkgConfig.hasPermissionForUid(callingUid, "android.permission.READ_PRIVILEGED_PHONE_STATE")
                 ) {
                     Log.i(TAG, "Rejecting device ID attestation without READ_PRIVILEGED_PHONE_STATE uid=$callingUid")
-                    return errorReply(KeymasterDefs.KM_ERROR_CANNOT_ATTEST_IDS, "Caller lacks READ_PRIVILEGED_PHONE_STATE")
+                    return errorReply(
+                        KeymasterDefs.KM_ERROR_CANNOT_ATTEST_IDS,
+                        "Caller lacks READ_PRIVILEGED_PHONE_STATE",
+                    )
                 }
                 val forceForge =
                     PkgConfig.needGenerate(callingUid) ||
@@ -239,7 +246,10 @@ class SecurityLevelInterceptor(private val original: IKeystoreSecurityLevel, pri
                             // match the forged key's parameters (e.g. AES-GCM decrypt without
                             // a digest tag -> KM_ERROR_UNSUPPORTED_DIGEST from authorizeOperation).
                             // Forward to the real keystore instead.
-                            Log.d(TAG, "generateKey: forwarding symmetric key uid=$callingUid alias=${keyDescriptor.alias}")
+                            Log.d(
+                                TAG,
+                                "generateKey: forwarding symmetric key uid=$callingUid alias=${keyDescriptor.alias}",
+                            )
                             return forwardKeygen(keyDescriptor.alias, startNanos)
                         }
                         val needsForgedAttestation =
@@ -254,7 +264,10 @@ class SecurityLevelInterceptor(private val original: IKeystoreSecurityLevel, pri
                             // authorizations the real operation cannot satisfy, which
                             // surfaces as KM_ERROR_UNSUPPORTED_DIGEST (-12) on begin().
                             // Forward to the real keystore instead.
-                            Log.d(TAG, "generateKey: forwarding plain asymmetric key uid=$callingUid alias=${keyDescriptor.alias}")
+                            Log.d(
+                                TAG,
+                                "generateKey: forwarding plain asymmetric key uid=$callingUid alias=${keyDescriptor.alias}",
+                            )
                             return forwardKeygen(keyDescriptor.alias, startNanos)
                         }
                         val pair =
@@ -278,7 +291,10 @@ class SecurityLevelInterceptor(private val original: IKeystoreSecurityLevel, pri
                     }
                     PkgConfig.needHack(callingUid) -> {
                         skipLeafHacks.remove(Key(callingUid, keyDescriptor.alias))
-                        Log.d(TAG, "generateKey: forwarding non-attestation key uid=$callingUid alias=${keyDescriptor.alias}")
+                        Log.d(
+                            TAG,
+                            "generateKey: forwarding non-attestation key uid=$callingUid alias=${keyDescriptor.alias}",
+                        )
                         return forwardKeygen(keyDescriptor.alias, startNanos)
                     }
                     else -> return Skip
@@ -297,7 +313,10 @@ class SecurityLevelInterceptor(private val original: IKeystoreSecurityLevel, pri
                 val force = data.dataAvail() > 0 && data.readBoolean()
                 if (force) {
                     Log.i(TAG, "createOperation rejected: forced op uid=$callingUid alias=${descriptor.alias}")
-                    return@runCatching errorReply(ResponseCode.PERMISSION_DENIED, "Forced operations require system privilege")
+                    return@runCatching errorReply(
+                        ResponseCode.PERMISSION_DENIED,
+                        "Forced operations require system privilege",
+                    )
                 }
                 val key = resolveKey(callingUid, descriptor)
                 if (key != null && info.params.usageCountLimit > 0) {
@@ -434,14 +453,12 @@ class SecurityLevelInterceptor(private val original: IKeystoreSecurityLevel, pri
     private fun recordRealKeygen(alias: String?) {
         val start = alias?.let { pendingKeygenStarts.remove(it) } ?: return
         val elapsedMs = (System.nanoTime() - start) / 1_000_000.0
-        if (elapsedMs in 0.3..80.0)
-            realKeygenEmaMs = realKeygenEmaMs?.let { it * 0.75 + elapsedMs * 0.25 } ?: elapsedMs
+        if (elapsedMs in 0.3..80.0) realKeygenEmaMs = realKeygenEmaMs?.let { it * 0.75 + elapsedMs * 0.25 } ?: elapsedMs
     }
 
     private fun padForgedKeygen(startNanos: Long) {
         val targetMs =
-            (realKeygenEmaMs ?: DEFAULT_KEYGEN_MS) *
-                (1.0 + (secureRandom.nextGaussian() * 0.06).coerceIn(-0.15, 0.25))
+            (realKeygenEmaMs ?: DEFAULT_KEYGEN_MS) * (1.0 + (secureRandom.nextGaussian() * 0.06).coerceIn(-0.15, 0.25))
         val remainingNanos = (targetMs * 1_000_000).toLong() - (System.nanoTime() - startNanos)
         if (remainingNanos > 0) LockSupport.parkNanos(remainingNanos)
     }

@@ -39,9 +39,7 @@ internal object KeyMintVersionResolver {
                 val version = interfaceVersion * 100
                 AndroidUtils.AttestationVersions(version, version)
             }
-            .onSuccess { versions ->
-                if (versions != null) Log.i(TAG, "Resolved $serviceName versions: $versions")
-            }
+            .onSuccess { versions -> if (versions != null) Log.i(TAG, "Resolved $serviceName versions: $versions") }
             .onFailure { Log.w(TAG, "Failed to query $serviceName interface version", it) }
             .getOrNull()
     }
@@ -69,9 +67,7 @@ internal object KeyMintVersionResolver {
                 legacyKeymasterVersions(hardwareInfo.versionNumber)
                     ?: error("Unsupported legacy Keymaster version: ${hardwareInfo.versionNumber}")
             }
-            .onSuccess { versions ->
-                Log.i(TAG, "Resolved $serviceName level=$securityLevel versions: $versions")
-            }
+            .onSuccess { versions -> Log.i(TAG, "Resolved $serviceName level=$securityLevel versions: $versions") }
             .onFailure { Log.w(TAG, "Failed to query $serviceName level=$securityLevel", it) }
             .getOrNull()
     }

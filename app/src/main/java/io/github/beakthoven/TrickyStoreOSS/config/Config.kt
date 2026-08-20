@@ -138,10 +138,9 @@ object PkgConfig {
 
     fun hasPermissionForUid(uid: Int, permission: String): Boolean {
         val userId = uid / 100000
-        return (uidPackages.getOrPut(uid) { getPm()?.getPackagesForUid(uid) ?: return false })
-            .any { pkg ->
-                runCatching { getPm()?.checkPermission(permission, pkg, userId) == 0 }.getOrDefault(false)
-            }
+        return (uidPackages.getOrPut(uid) { getPm()?.getPackagesForUid(uid) ?: return false }).any { pkg ->
+            runCatching { getPm()?.checkPermission(permission, pkg, userId) == 0 }.getOrDefault(false)
+        }
     }
 
     private fun checkNeed(callingUid: Int, targetMode: Mode, autoPredicate: Boolean): Boolean {
@@ -172,7 +171,8 @@ object PkgConfig {
 
     @Volatile private var packagePatchLevels: Map<String, CustomPatchLevel> = emptyMap()
 
-    val globalPatchLevelConfig: CustomPatchLevel? get() = globalPatchLevel
+    val globalPatchLevelConfig: CustomPatchLevel?
+        get() = globalPatchLevel
 
     fun packagePatchLevelForUid(uid: Int): CustomPatchLevel? {
         val packages = uidPackages.getOrPut(uid) { getPm()?.getPackagesForUid(uid) ?: return null }
@@ -200,7 +200,10 @@ object PkgConfig {
             for ((ctx, lines) in contexts) parsePatchContext(lines)?.let { parsed[ctx] = it }
             globalPatchLevel = parsed[""]
             packagePatchLevels = parsed.filterKeys { it.isNotEmpty() }
-            Log.i(TAG, "loaded patch levels: global=${globalPatchLevel != null}, ${packagePatchLevels.size} package overrides")
+            Log.i(
+                TAG,
+                "loaded patch levels: global=${globalPatchLevel != null}, ${packagePatchLevels.size} package overrides",
+            )
         }
         raw.onFailure { Log.e(TAG, "failed to update patch level", it) }
     }

@@ -239,7 +239,9 @@ object AndroidUtils {
         if (attestationVersion == 4) 41 else attestationVersion
 
     fun attestationVersions(securityLevel: Int): AttestationVersions {
-        resolvedVersions[securityLevel]?.let { return it }
+        resolvedVersions[securityLevel]?.let {
+            return it
+        }
 
         val platformVersions =
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {

@@ -29,7 +29,6 @@ import java.security.KeyPairGenerator
 import java.security.MessageDigest
 import java.security.SecureRandom
 import java.security.cert.Certificate
-import java.security.cert.X509Certificate
 import java.security.spec.ECGenParameterSpec
 import java.security.spec.RSAKeyGenParameterSpec
 import java.util.Date
@@ -144,13 +143,14 @@ object CertificateGen {
     private data class EcCurveInfo(val curve: Int, val name: String, val size: Int)
 
     // P_256 before CURVE_25519 so that fallback maps 256 -> secp256r1
-    private val EC_CURVES = listOf(
-        EcCurveInfo(EcCurve.P_224, "secp224r1", 224),
-        EcCurveInfo(EcCurve.P_256, "secp256r1", 256),
-        EcCurveInfo(EcCurve.P_384, "secp384r1", 384),
-        EcCurveInfo(EcCurve.P_521, "secp521r1", 521),
-        EcCurveInfo(EcCurve.CURVE_25519, "CURVE_25519", 256),
-    )
+    private val EC_CURVES =
+        listOf(
+            EcCurveInfo(EcCurve.P_224, "secp224r1", 224),
+            EcCurveInfo(EcCurve.P_256, "secp256r1", 256),
+            EcCurveInfo(EcCurve.P_384, "secp384r1", 384),
+            EcCurveInfo(EcCurve.P_521, "secp521r1", 521),
+            EcCurveInfo(EcCurve.CURVE_25519, "CURVE_25519", 256),
+        )
 
     fun effectiveKeySize(params: KeyGenParameters): Int {
         if (params.keySize > 0) return params.keySize
@@ -171,7 +171,14 @@ object CertificateGen {
                 Algorithm.RSA -> {
                     Log.d(TAG, "Generating RSA keypair of size ${params.keySize}")
                     KeyPairGenerator.getInstance("RSA", BouncyCastleProvider.PROVIDER_NAME)
-                        .apply { initialize(RSAKeyGenParameterSpec(params.keySize, params.rsaPublicExponent ?: RSAKeyGenParameterSpec.F4)) }
+                        .apply {
+                            initialize(
+                                RSAKeyGenParameterSpec(
+                                    params.keySize,
+                                    params.rsaPublicExponent ?: RSAKeyGenParameterSpec.F4,
+                                )
+                            )
+                        }
                         .generateKeyPair()
                 }
 
