@@ -39,6 +39,7 @@ import java.security.KeyPair
 import java.security.SecureRandom
 import java.security.cert.Certificate
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.locks.LockSupport
 
 private const val MAX_ATTESTATION_CHALLENGE_BYTES = 128
 
@@ -50,7 +51,13 @@ class SecurityLevelInterceptor(private val original: IKeystoreSecurityLevel, pri
             .toIntArray()
     }
 
+    // software forges reply faster than real TEE keygen, which timing probes pick up —
+    // pad forged replies to the measured real latency (EMA of forwarded generateKey calls)
+    @Volatile private var realKeygenEmaMs: Double? = null
+    private val pendingKeygenStarts = ConcurrentHashMap<String, Long>()
+
     companion object {
+        private const val DEFAULT_KEYGEN_MS = 3.0
         private val generateKeyTransaction = getTransactCode(IKeystoreSecurityLevel.Stub::class.java, "generateKey")
         private val createOperationTransaction =
             getTransactCode(IKeystoreSecurityLevel.Stub::class.java, "createOperation")
@@ -179,6 +186,7 @@ class SecurityLevelInterceptor(private val original: IKeystoreSecurityLevel, pri
             return if (PkgConfig.needHack(callingUid) || PkgConfig.needGenerate(callingUid)) Continue else Skip
         }
         if (code == generateKeyTransaction) {
+            val startNanos = System.nanoTime()
             Log.d(TAG, "intercept key gen uid=$callingUid pid=$callingPid")
             val raw = runCatching {
                 data.enforceInterface(IKeystoreSecurityLevel.DESCRIPTOR)
@@ -232,7 +240,7 @@ class SecurityLevelInterceptor(private val original: IKeystoreSecurityLevel, pri
                             // a digest tag -> KM_ERROR_UNSUPPORTED_DIGEST from authorizeOperation).
                             // Forward to the real keystore instead.
                             Log.d(TAG, "generateKey: forwarding symmetric key uid=$callingUid alias=${keyDescriptor.alias}")
-                            return Continue
+                            return forwardKeygen(keyDescriptor.alias, startNanos)
                         }
                         val needsForgedAttestation =
                             challenge != null ||
@@ -247,7 +255,7 @@ class SecurityLevelInterceptor(private val original: IKeystoreSecurityLevel, pri
                             // surfaces as KM_ERROR_UNSUPPORTED_DIGEST (-12) on begin().
                             // Forward to the real keystore instead.
                             Log.d(TAG, "generateKey: forwarding plain asymmetric key uid=$callingUid alias=${keyDescriptor.alias}")
-                            return Continue
+                            return forwardKeygen(keyDescriptor.alias, startNanos)
                         }
                         val pair =
                             CertificateGen.generateKeyPair(
@@ -265,12 +273,13 @@ class SecurityLevelInterceptor(private val original: IKeystoreSecurityLevel, pri
                             null,
                             pair.second,
                             PkgConfig.needHack(callingUid),
+                            startNanos,
                         )
                     }
                     PkgConfig.needHack(callingUid) -> {
                         skipLeafHacks.remove(Key(callingUid, keyDescriptor.alias))
                         Log.d(TAG, "generateKey: forwarding non-attestation key uid=$callingUid alias=${keyDescriptor.alias}")
-                        return Continue
+                        return forwardKeygen(keyDescriptor.alias, startNanos)
                     }
                     else -> return Skip
                 }
@@ -339,6 +348,7 @@ class SecurityLevelInterceptor(private val original: IKeystoreSecurityLevel, pri
             val raw = runCatching {
                 data.enforceInterface(IKeystoreSecurityLevel.DESCRIPTOR)
                 val keyDescriptor = data.readTypedObject(KeyDescriptor.CREATOR) ?: return@runCatching null
+                recordRealKeygen(keyDescriptor.alias)
                 val metadata = reply.readTypedObject(KeyMetadata.CREATOR) ?: return@runCatching null
                 val chain =
                     with(CertificateUtils) {
@@ -387,6 +397,7 @@ class SecurityLevelInterceptor(private val original: IKeystoreSecurityLevel, pri
         secretKey: javax.crypto.SecretKey?,
         chain: List<Certificate>?,
         skipLeafHack: Boolean,
+        startNanos: Long,
     ): Result {
         keyDescriptor.nspace = secureRandom.nextLong()
         val key = Key(callingUid, keyDescriptor.alias)
@@ -411,7 +422,28 @@ class SecurityLevelInterceptor(private val original: IKeystoreSecurityLevel, pri
                 kgp,
             )
         }
+        padForgedKeygen(startNanos)
         return typedReply(response.metadata)
+    }
+
+    private fun forwardKeygen(alias: String?, startNanos: Long): Result {
+        alias?.let { pendingKeygenStarts[it] = startNanos }
+        return Continue
+    }
+
+    private fun recordRealKeygen(alias: String?) {
+        val start = alias?.let { pendingKeygenStarts.remove(it) } ?: return
+        val elapsedMs = (System.nanoTime() - start) / 1_000_000.0
+        if (elapsedMs in 0.3..80.0)
+            realKeygenEmaMs = realKeygenEmaMs?.let { it * 0.75 + elapsedMs * 0.25 } ?: elapsedMs
+    }
+
+    private fun padForgedKeygen(startNanos: Long) {
+        val targetMs =
+            (realKeygenEmaMs ?: DEFAULT_KEYGEN_MS) *
+                (1.0 + (secureRandom.nextGaussian() * 0.06).coerceIn(-0.15, 0.25))
+        val remainingNanos = (targetMs * 1_000_000).toLong() - (System.nanoTime() - startNanos)
+        if (remainingNanos > 0) LockSupport.parkNanos(remainingNanos)
     }
 
     private fun buildResponse(
