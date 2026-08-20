@@ -153,18 +153,19 @@ object Keystore2Interceptor : BaseKeystoreInterceptor() {
                         if (SecurityLevelInterceptor.isPatchedKey(grant.key)) key = grant.key
                     }
                 }
-                if (key != null && SecurityLevelInterceptor.isPatchedKey(key)) {
+                if (key != null && SecurityLevelInterceptor.keys.containsKey(key)) {
+                    // forged keys only exist in our maps, so the real keystore can't take the
+                    // update — swallow it and patch the cached cert chain instead
                     SecurityLevelInterceptor.updateKeyCertChain(key, publicCert, certificateChain)
-                    Log.i(TAG, "updateSubcomponent: updated TSOSS cert chain for uid=$callingUid alias=${key.alias}")
+                    Log.i(TAG, "updateSubcomponent: swallowed for forged key uid=$callingUid alias=${key.alias}")
                     return@runCatching successReply()
                 }
                 if (key != null) {
+                    // real keys keep the update in the real keystore — drop the cached response
+                    // so the next read re-hacks the new chain instead of replaying the stale one
                     SecurityLevelInterceptor.patchedResponses.remove(key)
                     SecurityLevelInterceptor.skipLeafHacks.remove(key)
-                    Log.i(
-                        TAG,
-                        "Invalidated cached response for uid=$callingUid alias=${key.alias} after updateSubcomponent",
-                    )
+                    Log.i(TAG, "updateSubcomponent: forwarded, cache dropped uid=$callingUid alias=${key.alias}")
                 } else {
                     Log.i(TAG, "updateSubcomponent: could not resolve alias for nspace=${keyDescriptor.nspace}")
                 }
@@ -183,19 +184,36 @@ object Keystore2Interceptor : BaseKeystoreInterceptor() {
                 val granteeUid = data.readInt()
                 val accessVector = data.readInt() // KeyPermission bitmap (GET_INFO=4, USE=256, …)
                 val key = SecurityLevelInterceptor.resolveKey(callingUid, keyDescriptor)
-                if (key != null && SecurityLevelInterceptor.isPatchedKey(key)) {
-                    val grantId = java.security.SecureRandom().nextLong()
-                    SecurityLevelInterceptor.grants[grantId] =
-                        SecurityLevelInterceptor.GrantInfo(callingUid, granteeUid, key, accessVector)
+                if (key != null && SecurityLevelInterceptor.keys.containsKey(key)) {
+                    // forged keys don't exist in the real keystore so a real grant is impossible —
+                    // forge one instead. Re-grants to the same grantee reuse the existing grantId
+                    val existing =
+                        SecurityLevelInterceptor.grants.entries.firstOrNull { (_, g) ->
+                            g.key == key && g.granteeUid == granteeUid
+                        }
+                    val grantId =
+                        if (existing != null) {
+                            SecurityLevelInterceptor.grants[existing.key] =
+                                existing.value.copy(accessVector = accessVector)
+                            existing.key
+                        } else {
+                            val id = java.security.SecureRandom().nextLong()
+                            SecurityLevelInterceptor.grants[id] =
+                                SecurityLevelInterceptor.GrantInfo(callingUid, granteeUid, key, accessVector)
+                            id
+                        }
                     val grantDescriptor = KeyDescriptor()
                     grantDescriptor.domain = domainGrant
                     grantDescriptor.nspace = grantId
                     grantDescriptor.alias = null
-                    Log.i(
-                        TAG,
-                        "grant: created TSOSS grant grantId=$grantId for uid=$callingUid alias=${key.alias} granteeUid=$granteeUid",
-                    )
+                    Log.i(TAG, "grant: forged grantId=$grantId alias=${key.alias} grantee=$granteeUid")
                     return@runCatching typedReply(grantDescriptor)
+                }
+                if (key != null && SecurityLevelInterceptor.isPatchedKey(key)) {
+                    // real keys: let the real keystore own the grant so grant-domain operations
+                    // resolve there; the post-hook records the real grantId for later lookups
+                    Log.i(TAG, "grant: forwarding alias=${key.alias} grantee=$granteeUid")
+                    return@runCatching Continue
                 }
                 Skip
             }
@@ -209,7 +227,7 @@ object Keystore2Interceptor : BaseKeystoreInterceptor() {
                 val keyDescriptor = data.readTypedObject(KeyDescriptor.CREATOR) ?: return@runCatching Skip
                 val granteeUid = data.readInt()
                 val key = SecurityLevelInterceptor.resolveKey(callingUid, keyDescriptor)
-                if (key != null && SecurityLevelInterceptor.isPatchedKey(key)) {
+                if (key != null && SecurityLevelInterceptor.keys.containsKey(key)) {
                     val removed =
                         SecurityLevelInterceptor.grants.entries.removeIf { (_, g) ->
                             g.key == key && g.granteeUid == granteeUid
@@ -219,6 +237,12 @@ object Keystore2Interceptor : BaseKeystoreInterceptor() {
                         "ungrant: ${if (removed) "removed" else "no"} TSOSS grant for uid=$callingUid alias=${key.alias} granteeUid=$granteeUid",
                     )
                     return@runCatching successReply()
+                }
+                if (key != null) {
+                    // real key: forward the ungrant and drop our tracking for it
+                    SecurityLevelInterceptor.grants.entries.removeIf { (_, g) ->
+                        g.key == key && g.granteeUid == granteeUid
+                    }
                 }
                 Skip
             }
@@ -252,22 +276,24 @@ object Keystore2Interceptor : BaseKeystoreInterceptor() {
                             SecurityLevelInterceptor.keys[grant.key]?.response
                                 ?: SecurityLevelInterceptor.patchedResponses[grant.key]
                         if (response != null) {
-                            Log.i(
-                                TAG,
-                                "Serving TSOSS grant key for grantee uid=$callingUid grantId=${descriptor.nspace} ownerUid=${grant.ownerUid} alias=${grant.key.alias}",
-                            )
+                            Log.d(TAG, "getKeyEntry: serving grant alias=${grant.key.alias} grantee=$callingUid")
                             return@runCatching safeTypedObjectReply(response, "grant")
                         }
+                        Log.d(TAG, "getKeyEntry: grant ${descriptor.nspace} has no cache, falling through")
                     }
                 }
                 when {
                     PkgConfig.needGenerate(callingUid) -> {
-                        val response = SecurityLevelInterceptor.findGeneratedKey(callingUid, descriptor)?.response
+                        // forwarded (non-forged) keys only live in patchedResponses — serve that
+                        // cache too, or APP-domain reads diverge from GRANT-domain reads after
+                        // updateSubcomponent
+                        val response =
+                            SecurityLevelInterceptor.findGeneratedKey(callingUid, descriptor)?.response
+                                ?: SecurityLevelInterceptor.resolvePatchedResponse(callingUid, descriptor)
                         if (response != null) {
-                            Log.d(TAG, "Found generated response for uid=$callingUid alias=$aliasLabel")
+                            Log.d(TAG, "getKeyEntry: serving cache uid=$callingUid alias=$aliasLabel")
                             safeTypedObjectReply(response, "generate")
                         } else {
-                            Log.e(TAG, "No generated response found for uid=$callingUid alias=$aliasLabel")
                             Skip
                         }
                     }
@@ -423,6 +449,24 @@ object Keystore2Interceptor : BaseKeystoreInterceptor() {
                 }
             }
             raw.onFailure { Log.e(TAG, "updateSubcomponent cleanup failed", it) }
+            return Skip
+        }
+
+        if (code == grantTransaction && resultCode == 0 && KeyBoxUtils.hasKeyboxes()) {
+            val raw = runCatching {
+                if (reply.hasException()) return@runCatching
+                data.enforceInterface(IKeystoreService.DESCRIPTOR)
+                val keyDescriptor = data.readTypedObject(KeyDescriptor.CREATOR) ?: return@runCatching
+                val granteeUid = data.readInt()
+                val accessVector = data.readInt()
+                val grantDescriptor = reply.readTypedObject(KeyDescriptor.CREATOR) ?: return@runCatching
+                val key = SecurityLevelInterceptor.resolveKey(callingUid, keyDescriptor) ?: return@runCatching
+                if (!SecurityLevelInterceptor.isPatchedKey(key)) return@runCatching
+                SecurityLevelInterceptor.grants[grantDescriptor.nspace] =
+                    SecurityLevelInterceptor.GrantInfo(callingUid, granteeUid, key, accessVector)
+                Log.i(TAG, "grant: tracked real grantId=${grantDescriptor.nspace} alias=${key.alias} grantee=$granteeUid")
+            }
+            raw.onFailure { Log.e(TAG, "grant post-hook tracking failed", it) }
             return Skip
         }
 

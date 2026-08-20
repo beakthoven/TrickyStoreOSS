@@ -179,7 +179,7 @@ class SecurityLevelInterceptor(private val original: IKeystoreSecurityLevel, pri
             return if (PkgConfig.needHack(callingUid) || PkgConfig.needGenerate(callingUid)) Continue else Skip
         }
         if (code == generateKeyTransaction) {
-            Log.i(TAG, "intercept key gen uid=$callingUid pid=$callingPid")
+            Log.d(TAG, "intercept key gen uid=$callingUid pid=$callingPid")
             val raw = runCatching {
                 data.enforceInterface(IKeystoreSecurityLevel.DESCRIPTOR)
                 val keyDescriptor = data.readTypedObject(KeyDescriptor.CREATOR) ?: return@runCatching
@@ -231,10 +231,7 @@ class SecurityLevelInterceptor(private val original: IKeystoreSecurityLevel, pri
                             // match the forged key's parameters (e.g. AES-GCM decrypt without
                             // a digest tag -> KM_ERROR_UNSUPPORTED_DIGEST from authorizeOperation).
                             // Forward to the real keystore instead.
-                            Log.i(
-                                TAG,
-                                "Forwarding symmetric key to real keystore (no forge): uid=$callingUid alias=${keyDescriptor.alias}",
-                            )
+                            Log.d(TAG, "generateKey: forwarding symmetric key uid=$callingUid alias=${keyDescriptor.alias}")
                             return Continue
                         }
                         val needsForgedAttestation =
@@ -249,10 +246,7 @@ class SecurityLevelInterceptor(private val original: IKeystoreSecurityLevel, pri
                             // authorizations the real operation cannot satisfy, which
                             // surfaces as KM_ERROR_UNSUPPORTED_DIGEST (-12) on begin().
                             // Forward to the real keystore instead.
-                            Log.i(
-                                TAG,
-                                "Forwarding plain asymmetric key to real keystore (no forge): uid=$callingUid alias=${keyDescriptor.alias}",
-                            )
+                            Log.d(TAG, "generateKey: forwarding plain asymmetric key uid=$callingUid alias=${keyDescriptor.alias}")
                             return Continue
                         }
                         val pair =
@@ -275,10 +269,7 @@ class SecurityLevelInterceptor(private val original: IKeystoreSecurityLevel, pri
                     }
                     PkgConfig.needHack(callingUid) -> {
                         skipLeafHacks.remove(Key(callingUid, keyDescriptor.alias))
-                        Log.i(
-                            TAG,
-                            "Forwarding non-attestation key to real keystore (post-hook will patch): uid=$callingUid alias=${keyDescriptor.alias}",
-                        )
+                        Log.d(TAG, "generateKey: forwarding non-attestation key uid=$callingUid alias=${keyDescriptor.alias}")
                         return Continue
                     }
                     else -> return Skip
