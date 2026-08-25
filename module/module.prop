@@ -4,4 +4,4 @@ version=REPLACEMEVER
 versionCode=REPLACEMEVERCODE
 author=beakthoven
 description=A trick of keystore but open source.
-updateJson=https://raw.githubusercontent.com/beakthoven/TrickyStoreOSS/changelog/update.json
+updateJson=https://raw.githubusercontent.com/beakthoven/TrickyStoreOSS/main/update.json
