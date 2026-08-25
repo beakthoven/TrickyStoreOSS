@@ -2,7 +2,16 @@ name: Publish Changelog
 
 on:
   release:
-    types: [published, edited]
+    types: [edited]
+  workflow_call:
+    inputs:
+      tag:
+        required: true
+        type: string
+
+concurrency:
+  group: publish-changelog
+  cancel-in-progress: false
 
 jobs:
   generate-files:
@@ -11,25 +20,33 @@ jobs:
       contents: write
 
     steps:
-      - name: Fetch release metadata
+      - name: Check out
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Resolve release metadata
         id: release
         env:
-          ASSETS: ${{ toJson(github.event.release.assets) }}
-          TAG: ${{ github.event.release.tag_name }}
-          BODY: ${{ github.event.release.body }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          EVENT_TAG: ${{ github.event.release.tag_name }}
+          CALL_TAG: ${{ inputs.tag }}
         run: |
+          TAG="${EVENT_TAG:-$CALL_TAG}"
+          RELEASE=$(gh api "repos/$REPO/releases/tags/$TAG")
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
-          URL=$(echo "$ASSETS" | jq -r '.[] | select(.name | endswith("Release.zip")) | .browser_download_url' | head -n1)
+          echo "$RELEASE" | jq -r .body > body.md
+
+          URL=$(echo "$RELEASE" | jq -r '.assets[] | select(.name | endswith("Release.zip")) | .browser_download_url' | head -n1)
           if [ -z "$URL" ]; then
-            echo "::error::Missing Release.zip asset in release."
-            echo "$ASSETS" | jq -r '.[].name'
+            echo "::error::Missing Release.zip asset in release $TAG"
             exit 1
           fi
           echo "zip_url=$URL" >> "$GITHUB_OUTPUT"
 
-          # Read versionCode from the shipped module.prop so it never drifts
-          # from the value baked in at build time.
+          # Read versionCode from the shipped module.prop
           curl -fsSL "$URL" -o release.zip
           VERSION_CODE=$(unzip -p release.zip module.prop | sed -n 's/^versionCode=//p')
           if [ -z "$VERSION_CODE" ]; then
@@ -38,38 +55,34 @@ jobs:
           fi
           echo "version_code=$VERSION_CODE" >> "$GITHUB_OUTPUT"
 
-      - name: Checkout changelog branch
-        uses: actions/checkout@v7
-        with:
-          ref: changelog
-          path: changelog-branch
-
-      - name: Write changelog and JSON
+      - name: Write metadata and push to main and changelog
         env:
-          BODY: ${{ github.event.release.body }}
           TAG: ${{ steps.release.outputs.tag }}
           VERSION_CODE: ${{ steps.release.outputs.version_code }}
-          URL: ${{ steps.release.outputs.zip_url }}
+          ZIP_URL: ${{ steps.release.outputs.zip_url }}
           REPO: ${{ github.repository }}
         run: |
-          cd changelog-branch
-
-          printf '%s\n' "$BODY" > changelog.md
-
-          CHANGELOG_URL="https://raw.githubusercontent.com/${REPO}/changelog/changelog.md"
+          CHANGELOG_URL="https://raw.githubusercontent.com/$REPO/main/changelog.md"
+          cp body.md changelog.md
           jq -n \
             --arg v "$TAG" \
             --argjson vc "$VERSION_CODE" \
-            --arg z "$URL" \
+            --arg z "$ZIP_URL" \
             --arg c "$CHANGELOG_URL" \
             '{version:$v, versionCode:$vc, zipUrl:$z, changelog:$c}' > update.json
 
-      - name: Commit and push updates
-        run: |
-          cd changelog-branch
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          git add changelog.md update.json
-          git commit -m "Update metadata for ${{ steps.release.outputs.tag }}"
-          git push origin changelog -f
+          for BRANCH in main changelog; do
+            git worktree add --detach "wt-$BRANCH" "origin/$BRANCH"
+            cp changelog.md update.json "wt-$BRANCH/"
+            git -C "wt-$BRANCH" add changelog.md update.json
+            if git -C "wt-$BRANCH" diff --cached --quiet; then
+              echo "No metadata changes for $BRANCH, skipping"
+            else
+              git -C "wt-$BRANCH" commit -m "docs: update changelog metadata for $TAG"
+              git -C "wt-$BRANCH" push origin "HEAD:$BRANCH"
+            fi
+            git worktree remove "wt-$BRANCH"
+          done

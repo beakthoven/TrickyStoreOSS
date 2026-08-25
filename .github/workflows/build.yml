@@ -7,12 +7,14 @@ on:
       - '**.md'
       - '.github/**'
       - '!.github/workflows/**'
+      - 'update.json'
   pull_request:
     branches: [ "main" ]
     paths-ignore:
       - '**.md'
       - '.github/**'
       - '!.github/workflows/**'
+      - 'update.json'
   workflow_dispatch:
 
 concurrency:

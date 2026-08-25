@@ -68,3 +68,8 @@ jobs:
             "${{ steps.zip.outputs.path }}" \
             --title "${{ github.ref_name }}" \
             --generate-notes
+
+      - name: Publish changelog metadata
+        uses: ./.github/workflows/changelogs.yml
+        with:
+          tag: ${{ github.ref_name }}
