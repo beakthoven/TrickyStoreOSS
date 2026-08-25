@@ -19,7 +19,6 @@ import android.security.keystore.IKeystoreCertificateChainCallback
 import android.security.keystore.IKeystoreExportKeyCallback
 import android.security.keystore.IKeystoreKeyCharacteristicsCallback
 import android.security.keystore.IKeystoreService
-import android.util.Log
 import io.github.beakthoven.TrickyStoreOSS.CertificateGen
 import io.github.beakthoven.TrickyStoreOSS.CertificateHack
 import io.github.beakthoven.TrickyStoreOSS.KeyBoxUtils
@@ -30,7 +29,7 @@ import io.github.beakthoven.TrickyStoreOSS.interceptors.InterceptorUtils.createS
 import io.github.beakthoven.TrickyStoreOSS.interceptors.InterceptorUtils.extractAlias
 import io.github.beakthoven.TrickyStoreOSS.interceptors.InterceptorUtils.getTransactCode
 import io.github.beakthoven.TrickyStoreOSS.interceptors.InterceptorUtils.hasException
-import io.github.beakthoven.TrickyStoreOSS.logging.TAG
+import io.github.beakthoven.TrickyStoreOSS.logging.Logger
 import java.math.BigInteger
 import java.security.KeyPair
 import java.util.Date
@@ -89,7 +88,7 @@ object KeystoreInterceptor : BaseKeystoreInterceptor() {
                             data.enforceInterface(DESCRIPTOR)
                             val callback = IKeystoreKeyCharacteristicsCallback.Stub.asInterface(data.readStrongBinder())
                             val alias = data.readString()!!.extractAlias()
-                            Log.i(TAG, "generateKeyTransaction uid $callingUid alias $alias")
+                            Logger.i("generateKeyTransaction uid $callingUid alias $alias")
                             val check = data.readInt()
                             val kma = KeymasterArguments()
                             val kgp = CertificateGen.KeyGenParameters()
@@ -118,7 +117,7 @@ object KeystoreInterceptor : BaseKeystoreInterceptor() {
                                         getLongTagValue.isAccessible = true
                                         kgp.rsaPublicExponent = getLongTagValue.invoke(kma, rsaArgument) as BigInteger
                                     } catch (ex: Exception) {
-                                        Log.e(TAG, "Read rsaPublicExponent error", ex)
+                                        Logger.e("Read rsaPublicExponent error", ex)
                                     }
                                 }
                                 keyArguments[Key(callingUid, alias)] = kgp
@@ -133,7 +132,7 @@ object KeystoreInterceptor : BaseKeystoreInterceptor() {
 
                             return createSuccessReply()
                         }
-                        raw.onFailure { Log.e(TAG, "generateKeyTransaction error", it) }
+                        raw.onFailure { Logger.e("generateKeyTransaction error", it) }
                     }
 
                     getKeyCharacteristicsTransaction -> {
@@ -141,7 +140,7 @@ object KeystoreInterceptor : BaseKeystoreInterceptor() {
                             data.enforceInterface(DESCRIPTOR)
                             val callback = IKeystoreKeyCharacteristicsCallback.Stub.asInterface(data.readStrongBinder())
                             val alias = data.readString()!!.extractAlias()
-                            Log.i(TAG, "getKeyCharacteristicsTransaction uid $callingUid alias $alias")
+                            Logger.i("getKeyCharacteristicsTransaction uid $callingUid alias $alias")
                             val kc = KeyCharacteristics()
                             val kma = KeymasterArguments()
                             kma.addEnum(
@@ -156,7 +155,7 @@ object KeystoreInterceptor : BaseKeystoreInterceptor() {
 
                             return createSuccessReply()
                         }
-                        raw.onFailure { Log.e(TAG, "getKeyCharacteristicsTransaction error", it) }
+                        raw.onFailure { Logger.e("getKeyCharacteristicsTransaction error", it) }
                     }
 
                     exportKeyTransaction -> {
@@ -164,7 +163,7 @@ object KeystoreInterceptor : BaseKeystoreInterceptor() {
                             data.enforceInterface(DESCRIPTOR)
                             val callback = IKeystoreExportKeyCallback.Stub.asInterface(data.readStrongBinder())
                             val alias = data.readString()!!.extractAlias()
-                            Log.i(TAG, "exportKeyTransaction uid $callingUid alias $alias")
+                            Logger.i("exportKeyTransaction uid $callingUid alias $alias")
                             val kp = CertificateGen.generateKeyPair(keyArguments[Key(callingUid, alias)]!!)
                             keyPairs[Key(callingUid, alias)] = kp!!
 
@@ -179,7 +178,7 @@ object KeystoreInterceptor : BaseKeystoreInterceptor() {
 
                             return createSuccessReply()
                         }
-                        raw.onFailure { Log.e(TAG, "exportKeyTransaction error", it) }
+                        raw.onFailure { Logger.e("exportKeyTransaction error", it) }
                     }
 
                     attestKeyTransaction -> {
@@ -187,7 +186,7 @@ object KeystoreInterceptor : BaseKeystoreInterceptor() {
                             data.enforceInterface(DESCRIPTOR)
                             val callback = IKeystoreCertificateChainCallback.Stub.asInterface(data.readStrongBinder())
                             val alias = data.readString()!!.extractAlias()
-                            Log.i(TAG, "attestKeyTransaction uid $callingUid alias $alias")
+                            Logger.i("attestKeyTransaction uid $callingUid alias $alias")
                             val check = data.readInt()
                             val kma = KeymasterArguments()
                             if (check == 1) {
@@ -208,7 +207,7 @@ object KeystoreInterceptor : BaseKeystoreInterceptor() {
 
                             return createSuccessReply()
                         }
-                        raw.onFailure { Log.e(TAG, "attestKeyTransaction error", it) }
+                        raw.onFailure { Logger.e("attestKeyTransaction error", it) }
                     }
                 }
             }
@@ -228,9 +227,8 @@ object KeystoreInterceptor : BaseKeystoreInterceptor() {
     ): Result {
         if (target != keystore || code != getTransaction || reply == null) return Skip
         if (reply.hasException()) return Skip
-        Log.d(
-            TAG,
-            "intercept post $target uid=$callingUid pid=$callingPid dataSz=${data.dataSize()} replySz=${reply.dataSize()}",
+        Logger.d(
+            "intercept post $target uid=$callingUid pid=$callingPid dataSz=${data.dataSize()} replySz=${reply.dataSize()}"
         )
         try {
             data.enforceInterface(DESCRIPTOR)
@@ -239,17 +237,17 @@ object KeystoreInterceptor : BaseKeystoreInterceptor() {
             when {
                 alias.startsWith(Credentials.USER_CERTIFICATE) -> {
                     response = CertificateHack.hackUserCertificate(response!!, alias.extractAlias(), callingUid)
-                    Log.i(TAG, "Hacked leaf certificate for uid=$callingUid")
+                    Logger.i("Hacked leaf certificate for uid=$callingUid")
                     return createByteArrayReply(response)
                 }
                 alias.startsWith(Credentials.CA_CERTIFICATE) -> {
                     response = CertificateHack.hackCACertificateChain(response!!, alias.extractAlias(), callingUid)
-                    Log.i(TAG, "Hacked CA certificate chain for uid=$callingUid")
+                    Logger.i("Hacked CA certificate chain for uid=$callingUid")
                     return createByteArrayReply(response)
                 }
             }
         } catch (t: Throwable) {
-            Log.e(TAG, "failed to hack certificate chain of uid=$callingUid pid=$callingPid!", t)
+            Logger.e("failed to hack certificate chain of uid=$callingUid pid=$callingPid!", t)
         }
         return Skip
     }

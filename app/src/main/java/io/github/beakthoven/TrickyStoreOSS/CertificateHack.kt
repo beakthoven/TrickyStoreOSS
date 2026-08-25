@@ -9,8 +9,7 @@ import android.hardware.security.keymint.KeyParameter
 import android.hardware.security.keymint.KeyParameterValue
 import android.hardware.security.keymint.Tag
 import android.system.keystore2.Authorization
-import android.util.Log
-import io.github.beakthoven.TrickyStoreOSS.logging.TAG
+import io.github.beakthoven.TrickyStoreOSS.logging.Logger
 import java.io.ByteArrayInputStream
 import java.security.cert.Certificate
 import java.security.cert.X509Certificate
@@ -134,7 +133,7 @@ object CertificateHack {
         return try {
             hackLeaf(certificateChain, uid)
         } catch (t: Throwable) {
-            Log.e(TAG, "Failed to hack certificate chain", t)
+            Logger.e("Failed to hack certificate chain", t)
             certificateChain
         }
     }
@@ -151,7 +150,7 @@ object CertificateHack {
                     ?: throw UnsupportedOperationException("Unsupported algorithm: $algorithm")
             CertificateUtils.run { keybox.certificates.toByteArray() } ?: caList
         } catch (t: Throwable) {
-            Log.e(TAG, "Failed to hack CA certificate chain", t)
+            Logger.e("Failed to hack CA certificate chain", t)
             caList
         }
     }
@@ -167,7 +166,7 @@ object CertificateHack {
             val hacked = hackLeaf(arrayOf(leaf), uid)
             hacked[0].encoded
         } catch (t: Throwable) {
-            Log.e(TAG, "Failed to hack user certificate", t)
+            Logger.e("Failed to hack user certificate", t)
             certificate
         }
     }
@@ -187,7 +186,7 @@ object CertificateHack {
                 verifiedBootHash = CertificateUtils.getByteArrayFromAsn1(originalRootOfTrust.getObjectAt(3))
             }
         } catch (t: Throwable) {
-            Log.e(TAG, "Failed to get verified boot hash from original, using generated", t)
+            Logger.e("Failed to get verified boot hash from original, using generated", t)
         }
 
         if (verifiedBootHash == null) {

@@ -11,11 +11,10 @@ import android.os.FileObserver
 import android.os.IBinder
 import android.os.IInterface
 import android.os.ServiceManager
-import android.util.Log
 import io.github.beakthoven.TrickyStoreOSS.AttestUtils.TEEStatus
 import io.github.beakthoven.TrickyStoreOSS.KeyBoxUtils
 import io.github.beakthoven.TrickyStoreOSS.interceptors.SecurityLevelInterceptor
-import io.github.beakthoven.TrickyStoreOSS.logging.TAG
+import io.github.beakthoven.TrickyStoreOSS.logging.Logger
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 
@@ -46,9 +45,9 @@ object PkgConfig {
                 }
             }
             packageModes = modes
-            Log.i(TAG, "update target packages: $modes")
+            Logger.i("update target packages: $modes")
         }
-        raw.onFailure { Log.e(TAG, "failed to update target files", it) }
+        raw.onFailure { Logger.e("failed to update target files", it) }
     }
 
     private fun updateKeyBox(f: File?) {
@@ -56,7 +55,7 @@ object PkgConfig {
             KeyBoxUtils.readFromXml(f?.readText())
             SecurityLevelInterceptor.cleanupAll()
         }
-        raw.onFailure { Log.e(TAG, "failed to update keybox", it) }
+        raw.onFailure { Logger.e("failed to update keybox", it) }
     }
 
     private const val CONFIG_PATH = "/data/adb/tricky_store"
@@ -73,9 +72,9 @@ object PkgConfig {
         teeBroken = !TEEStatus
         try {
             statusFile.writeText("teeBroken=${teeBroken}")
-            Log.i(TAG, "TEE status written to $statusFile: teeBroken=$teeBroken")
+            Logger.i("TEE status written to $statusFile: teeBroken=$teeBroken")
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to write TEE status: ${e.message}")
+            Logger.e("Failed to write TEE status: ${e.message}")
         }
     }
 
@@ -104,11 +103,11 @@ object PkgConfig {
         if (scope.exists()) {
             updateTargetPackages(scope)
         } else {
-            Log.e(TAG, "target.txt file not found, please put it to $scope !")
+            Logger.e("target.txt file not found, please put it to $scope !")
         }
         val keybox = File(root, KEYBOX_FILE)
         if (!keybox.exists()) {
-            Log.e(TAG, "keybox file not found, please put it to $keybox !")
+            Logger.e("keybox file not found, please put it to $keybox !")
         } else {
             updateKeyBox(keybox)
         }
@@ -160,7 +159,7 @@ object PkgConfig {
             }
             return false
         }
-        return raw.onFailure { Log.e(TAG, "failed to get packages", it) }.getOrNull() ?: false
+        return raw.onFailure { Logger.e("failed to get packages", it) }.getOrNull() ?: false
     }
 
     fun needHack(callingUid: Int): Boolean = checkNeed(callingUid, Mode.LEAF_HACK, teeBroken == false)
@@ -200,12 +199,11 @@ object PkgConfig {
             for ((ctx, lines) in contexts) parsePatchContext(lines)?.let { parsed[ctx] = it }
             globalPatchLevel = parsed[""]
             packagePatchLevels = parsed.filterKeys { it.isNotEmpty() }
-            Log.i(
-                TAG,
-                "loaded patch levels: global=${globalPatchLevel != null}, ${packagePatchLevels.size} package overrides",
+            Logger.i(
+                "loaded patch levels: global=${globalPatchLevel != null}, ${packagePatchLevels.size} package overrides"
             )
         }
-        raw.onFailure { Log.e(TAG, "failed to update patch level", it) }
+        raw.onFailure { Logger.e("failed to update patch level", it) }
     }
 
     private fun parsePatchContext(lines: List<String>): CustomPatchLevel? {
@@ -236,13 +234,13 @@ object PkgConfig {
         while (tryCount++ < 70) {
             val service = ServiceManager.getService(name)
             if (service != null) {
-                Log.d(TAG, "Got $name service after $tryCount tries")
+                Logger.d("Got $name service after $tryCount tries")
                 return service
             }
             Thread.sleep(500)
         }
 
-        Log.e(TAG, "Failed to get $name service")
+        Logger.e("Failed to get $name service")
         return null
     }
 }

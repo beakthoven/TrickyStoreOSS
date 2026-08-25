@@ -6,9 +6,8 @@
 package io.github.beakthoven.TrickyStoreOSS
 
 import android.hardware.security.keymint.Algorithm
-import android.util.Log
 import io.github.beakthoven.TrickyStoreOSS.CertificateGen.KeyGenParameters
-import io.github.beakthoven.TrickyStoreOSS.logging.TAG
+import io.github.beakthoven.TrickyStoreOSS.logging.Logger
 import java.io.ByteArrayInputStream
 import java.io.DataInputStream
 import java.io.DataOutputStream
@@ -181,7 +180,7 @@ object PersistenceManager {
                 tmp.delete()
             }
         }
-        raw.onFailure { Log.e(TAG, "Failed to persist key uid=$uid alias=$alias", it) }
+        raw.onFailure { Logger.e("Failed to persist key uid=$uid alias=$alias", it) }
     }
 
     fun loadAll(): List<PersistedKey> {
@@ -194,7 +193,7 @@ object PersistenceManager {
                     DataInputStream(file.inputStream().buffered()).use { ins ->
                         val version = ins.readByte().toInt()
                         if (version != FORMAT_VERSION) {
-                            Log.i(TAG, "Skipping persisted key ${file.name}: unsupported format $version")
+                            Logger.i("Skipping persisted key ${file.name}: unsupported format $version")
                             return@runCatching
                         }
                         val uid = ins.readInt()
@@ -301,7 +300,7 @@ object PersistenceManager {
                         )
                     }
                 }
-                raw.onFailure { Log.e(TAG, "Failed to load persisted key from ${file.name}", it) }
+                raw.onFailure { Logger.e("Failed to load persisted key from ${file.name}", it) }
             }
         return result
     }
@@ -309,13 +308,13 @@ object PersistenceManager {
     fun deleteKey(uid: Int, alias: String) {
         persistExecutor.execute {
             runCatching { fileFor(uid, alias).delete() }
-                .onFailure { Log.e(TAG, "Failed to delete persisted key uid=$uid alias=$alias", it) }
+                .onFailure { Logger.e("Failed to delete persisted key uid=$uid alias=$alias", it) }
         }
     }
 
     fun clearAll() {
         persistExecutor.execute {
-            runCatching { dir.deleteRecursively() }.onFailure { Log.e(TAG, "Failed to clear persisted keys", it) }
+            runCatching { dir.deleteRecursively() }.onFailure { Logger.e("Failed to clear persisted keys", it) }
         }
     }
 

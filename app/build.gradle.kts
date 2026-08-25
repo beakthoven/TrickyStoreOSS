@@ -78,18 +78,8 @@ android {
             version = "3.28.0+"
         }
     }
-    buildFeatures {
-        prefab = true
-    }
-    packaging {
-        resources {
-            pickFirsts += setOf(
-                "META-INF/LICENSE.md",
-                "META-INF/NOTICE.md",
-                "META-INF/INDEX.LIST",
-            )
-        }
-    }
+    buildFeatures { prefab = true }
+    packaging { resources { pickFirsts += setOf("META-INF/LICENSE.md", "META-INF/NOTICE.md", "META-INF/INDEX.LIST") } }
 }
 
 dependencies {
@@ -131,7 +121,9 @@ androidComponents {
                     buildDir
                         .get()
                         .asFile
-                        .resolve("intermediates/stripped_native_libs/$variantName/strip${capitalized}DebugSymbols/out/lib")
+                        .resolve(
+                            "intermediates/stripped_native_libs/$variantName/strip${capitalized}DebugSymbols/out/lib"
+                        )
 
                 val allowedLibs = setOf("libinject.so", "libTrickyStoreOSS.so")
                 soDir

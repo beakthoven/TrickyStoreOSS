@@ -6,10 +6,9 @@
 package io.github.beakthoven.TrickyStoreOSS
 
 import android.security.keystore.KeyProperties
-import android.util.Log
 import io.github.beakthoven.TrickyStoreOSS.CertificateGen.KeyBox
 import io.github.beakthoven.TrickyStoreOSS.CertificateHack.clearLeafAlgorithms
-import io.github.beakthoven.TrickyStoreOSS.logging.TAG
+import io.github.beakthoven.TrickyStoreOSS.logging.Logger
 import java.io.StringReader
 import java.util.concurrent.ConcurrentHashMap
 import org.xmlpull.v1.XmlPullParser
@@ -25,7 +24,7 @@ object KeyBoxUtils {
         clearLeafAlgorithms()
 
         if (xmlData == null) {
-            Log.i(TAG, "Clearing all keyboxes")
+            Logger.i("Clearing all keyboxes")
             return
         }
 
@@ -61,9 +60,9 @@ object KeyBoxUtils {
                 }
                 event = parser.next()
             }
-            Log.i(TAG, "Successfully updated $keyCount keyboxes")
+            Logger.i("Successfully updated $keyCount keyboxes")
         }
-        raw.onFailure { Log.e(TAG, "Error loading XML file (keyboxes cleared)", it) }
+        raw.onFailure { Logger.e("Error loading XML file (keyboxes cleared)", it) }
     }
 
     private fun readElementText(parser: XmlPullParser): String {
@@ -103,14 +102,13 @@ object KeyBoxUtils {
                     else -> attrAlgo?.uppercase()
                 }
             if (attrNormalized != null && !attrNormalized.equals(derived, ignoreCase = true)) {
-                Log.w(
-                    TAG,
-                    "Keybox algorithm attribute '$attrAlgo' disagrees with parsed key '$derived'; using parsed key",
+                Logger.w(
+                    "Keybox algorithm attribute '$attrAlgo' disagrees with parsed key '$derived'; using parsed key"
                 )
             }
             val certs = certTexts.map { CertificateUtils.parseCertificate(it).getOrThrow() }
             keyboxes[algorithmName] = KeyBox(keyPair, certs)
         }
-        raw.onFailure { Log.e(TAG, "Error processing keybox (algorithm=$attrAlgo)", it) }
+        raw.onFailure { Logger.e("Error processing keybox (algorithm=$attrAlgo)", it) }
     }
 }

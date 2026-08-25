@@ -10,9 +10,8 @@ import android.hardware.security.keymint.SecurityLevel
 import android.os.Build
 import android.os.ServiceManager
 import android.security.compat.IKeystoreCompatService
-import android.util.Log
 import androidx.annotation.RequiresApi
-import io.github.beakthoven.TrickyStoreOSS.logging.TAG
+import io.github.beakthoven.TrickyStoreOSS.logging.Logger
 
 /** Resolves versions from Android 12+ native KeyMint and legacy Keymaster backends. */
 @RequiresApi(Build.VERSION_CODES.S)
@@ -39,8 +38,8 @@ internal object KeyMintVersionResolver {
                 val version = interfaceVersion * 100
                 AndroidUtils.AttestationVersions(version, version)
             }
-            .onSuccess { versions -> if (versions != null) Log.i(TAG, "Resolved $serviceName versions: $versions") }
-            .onFailure { Log.w(TAG, "Failed to query $serviceName interface version", it) }
+            .onSuccess { versions -> if (versions != null) Logger.i("Resolved $serviceName versions: $versions") }
+            .onFailure { Logger.w("Failed to query $serviceName interface version", it) }
             .getOrNull()
     }
 
@@ -67,8 +66,8 @@ internal object KeyMintVersionResolver {
                 legacyKeymasterVersions(hardwareInfo.versionNumber)
                     ?: error("Unsupported legacy Keymaster version: ${hardwareInfo.versionNumber}")
             }
-            .onSuccess { versions -> Log.i(TAG, "Resolved $serviceName level=$securityLevel versions: $versions") }
-            .onFailure { Log.w(TAG, "Failed to query $serviceName level=$securityLevel", it) }
+            .onSuccess { versions -> Logger.i("Resolved $serviceName level=$securityLevel versions: $versions") }
+            .onFailure { Logger.w("Failed to query $serviceName level=$securityLevel", it) }
             .getOrNull()
     }
 }

@@ -21,7 +21,6 @@ import android.system.keystore2.KeyEntryResponse
 import android.system.keystore2.KeyMetadata
 import android.system.keystore2.KeyParameters
 import android.system.keystore2.ResponseCode
-import android.util.Log
 import androidx.annotation.Keep
 import io.github.beakthoven.TrickyStoreOSS.AndroidUtils
 import io.github.beakthoven.TrickyStoreOSS.CertificateGen
@@ -33,7 +32,7 @@ import io.github.beakthoven.TrickyStoreOSS.interceptors.InterceptorUtils.errorRe
 import io.github.beakthoven.TrickyStoreOSS.interceptors.InterceptorUtils.getTransactCode
 import io.github.beakthoven.TrickyStoreOSS.interceptors.InterceptorUtils.hasException
 import io.github.beakthoven.TrickyStoreOSS.interceptors.InterceptorUtils.typedReply
-import io.github.beakthoven.TrickyStoreOSS.logging.TAG
+import io.github.beakthoven.TrickyStoreOSS.logging.Logger
 import io.github.beakthoven.TrickyStoreOSS.putCertificateChain
 import java.security.KeyPair
 import java.security.SecureRandom
@@ -187,7 +186,7 @@ class SecurityLevelInterceptor(private val original: IKeystoreSecurityLevel, pri
         }
         if (code == generateKeyTransaction) {
             val startNanos = System.nanoTime()
-            Log.d(TAG, "intercept key gen uid=$callingUid pid=$callingPid")
+            Logger.d("intercept key gen uid=$callingUid pid=$callingPid")
             val raw = runCatching {
                 data.enforceInterface(IKeystoreSecurityLevel.DESCRIPTOR)
                 val keyDescriptor = data.readTypedObject(KeyDescriptor.CREATOR) ?: return@runCatching
@@ -198,21 +197,17 @@ class SecurityLevelInterceptor(private val original: IKeystoreSecurityLevel, pri
                 val kgp = CertificateGen.KeyGenParameters(params)
                 val challenge = kgp.attestationChallenge
                 if (challenge != null && challenge.size > MAX_ATTESTATION_CHALLENGE_BYTES) {
-                    Log.i(
-                        TAG,
-                        "Rejecting oversized attestation challenge (${challenge.size}B > $MAX_ATTESTATION_CHALLENGE_BYTES) uid=$callingUid alias=${keyDescriptor.alias}",
+                    Logger.i(
+                        "Rejecting oversized attestation challenge (${challenge.size}B > $MAX_ATTESTATION_CHALLENGE_BYTES) uid=$callingUid alias=${keyDescriptor.alias}"
                     )
                     return errorReply(KeymasterDefs.KM_ERROR_INVALID_INPUT_LENGTH, "Oversized attestation challenge")
                 }
                 if (keyDescriptor.alias == null) {
-                    Log.d(TAG, "KeyDescriptor has null alias (KEY_ID domain), passing through to real keystore")
+                    Logger.d("KeyDescriptor has null alias (KEY_ID domain), passing through to real keystore")
                     return Skip
                 }
                 if (params.any { it.tag == Tag.CREATION_DATETIME }) {
-                    Log.i(
-                        TAG,
-                        "Rejecting caller-supplied CREATION_DATETIME uid=$callingUid alias=${keyDescriptor.alias}",
-                    )
+                    Logger.i("Rejecting caller-supplied CREATION_DATETIME uid=$callingUid alias=${keyDescriptor.alias}")
                     return errorReply(ResponseCode.INVALID_ARGUMENT, "CREATION_DATETIME is auto-injected")
                 }
                 val hasDeviceIdAttestation = params.any {
@@ -226,7 +221,7 @@ class SecurityLevelInterceptor(private val original: IKeystoreSecurityLevel, pri
                     hasDeviceIdAttestation &&
                         !PkgConfig.hasPermissionForUid(callingUid, "android.permission.READ_PRIVILEGED_PHONE_STATE")
                 ) {
-                    Log.i(TAG, "Rejecting device ID attestation without READ_PRIVILEGED_PHONE_STATE uid=$callingUid")
+                    Logger.i("Rejecting device ID attestation without READ_PRIVILEGED_PHONE_STATE uid=$callingUid")
                     return errorReply(
                         KeymasterDefs.KM_ERROR_CANNOT_ATTEST_IDS,
                         "Caller lacks READ_PRIVILEGED_PHONE_STATE",
@@ -246,9 +241,8 @@ class SecurityLevelInterceptor(private val original: IKeystoreSecurityLevel, pri
                             // match the forged key's parameters (e.g. AES-GCM decrypt without
                             // a digest tag -> KM_ERROR_UNSUPPORTED_DIGEST from authorizeOperation).
                             // Forward to the real keystore instead.
-                            Log.d(
-                                TAG,
-                                "generateKey: forwarding symmetric key uid=$callingUid alias=${keyDescriptor.alias}",
+                            Logger.d(
+                                "generateKey: forwarding symmetric key uid=$callingUid alias=${keyDescriptor.alias}"
                             )
                             return forwardKeygen(keyDescriptor.alias, startNanos)
                         }
@@ -264,9 +258,8 @@ class SecurityLevelInterceptor(private val original: IKeystoreSecurityLevel, pri
                             // authorizations the real operation cannot satisfy, which
                             // surfaces as KM_ERROR_UNSUPPORTED_DIGEST (-12) on begin().
                             // Forward to the real keystore instead.
-                            Log.d(
-                                TAG,
-                                "generateKey: forwarding plain asymmetric key uid=$callingUid alias=${keyDescriptor.alias}",
+                            Logger.d(
+                                "generateKey: forwarding plain asymmetric key uid=$callingUid alias=${keyDescriptor.alias}"
                             )
                             return forwardKeygen(keyDescriptor.alias, startNanos)
                         }
@@ -291,16 +284,15 @@ class SecurityLevelInterceptor(private val original: IKeystoreSecurityLevel, pri
                     }
                     PkgConfig.needHack(callingUid) -> {
                         skipLeafHacks.remove(Key(callingUid, keyDescriptor.alias))
-                        Log.d(
-                            TAG,
-                            "generateKey: forwarding non-attestation key uid=$callingUid alias=${keyDescriptor.alias}",
+                        Logger.d(
+                            "generateKey: forwarding non-attestation key uid=$callingUid alias=${keyDescriptor.alias}"
                         )
                         return forwardKeygen(keyDescriptor.alias, startNanos)
                     }
                     else -> return Skip
                 }
             }
-            raw.onFailure { Log.e(TAG, "parse key gen request", it) }
+            raw.onFailure { Logger.e("parse key gen request", it) }
         }
         if (code == createOperationTransaction) {
             val raw = runCatching {
@@ -312,7 +304,7 @@ class SecurityLevelInterceptor(private val original: IKeystoreSecurityLevel, pri
                 // AIDL: createOperation(KeyDescriptor, KeyParameter[], boolean force)
                 val force = data.dataAvail() > 0 && data.readBoolean()
                 if (force) {
-                    Log.i(TAG, "createOperation rejected: forced op uid=$callingUid alias=${descriptor.alias}")
+                    Logger.i("createOperation rejected: forced op uid=$callingUid alias=${descriptor.alias}")
                     return@runCatching errorReply(
                         ResponseCode.PERMISSION_DENIED,
                         "Forced operations require system privilege",
@@ -322,22 +314,20 @@ class SecurityLevelInterceptor(private val original: IKeystoreSecurityLevel, pri
                 if (key != null && info.params.usageCountLimit > 0) {
                     val remaining = usageRemaining[key]
                     if (remaining != null && remaining <= 0) {
-                        Log.i(TAG, "createOperation: usage exhausted uid=$callingUid alias=${descriptor.alias}")
+                        Logger.i("createOperation: usage exhausted uid=$callingUid alias=${descriptor.alias}")
                         return@runCatching errorReply(ResponseCode.KEY_NOT_FOUND, "Key usage limit exhausted")
                     }
                 }
                 val opRequest = OpRequest.parse(opParams)
                 val errCode = authorizeOperation(info.params, opRequest)
                 if (errCode != null) {
-                    Log.i(
-                        TAG,
-                        "createOperation rejected for uid=$callingUid alias=${descriptor.alias} nspace=${descriptor.nspace}: KM error $errCode",
+                    Logger.i(
+                        "createOperation rejected for uid=$callingUid alias=${descriptor.alias} nspace=${descriptor.nspace}: KM error $errCode"
                     )
                     return@runCatching errorReply(errCode, "Operation not authorized")
                 }
-                Log.d(
-                    TAG,
-                    "createOperation: serving software operation for uid=$callingUid alias=${descriptor.alias} nspace=${descriptor.nspace}",
+                Logger.d(
+                    "createOperation: serving software operation for uid=$callingUid alias=${descriptor.alias} nspace=${descriptor.nspace}"
                 )
                 val op = SoftwareOperationBinder.create(info, opRequest, resolveKey(callingUid, descriptor))
                 val response =
@@ -347,7 +337,7 @@ class SecurityLevelInterceptor(private val original: IKeystoreSecurityLevel, pri
                     }
                 typedReply(response)
             }
-            val result = raw.onFailure { Log.e(TAG, "handle createOperation request", it) }.getOrNull()
+            val result = raw.onFailure { Logger.e("handle createOperation request", it) }.getOrNull()
             if (result != null) return result
         }
         return Skip
@@ -387,23 +377,22 @@ class SecurityLevelInterceptor(private val original: IKeystoreSecurityLevel, pri
                 metadata.key?.nspace?.let { nspace ->
                     if (nspace != 0L) keysByNspace[nspace] = Key(callingUid, keyDescriptor.alias)
                 }
-                Log.i(TAG, "Patched generateKey chain for uid=$callingUid alias=${keyDescriptor.alias}")
+                Logger.i("Patched generateKey chain for uid=$callingUid alias=${keyDescriptor.alias}")
                 typedReply(metadata)
             }
-            val result = raw.onFailure { Log.e(TAG, "patch generateKey reply", it) }.getOrNull()
+            val result = raw.onFailure { Logger.e("patch generateKey reply", it) }.getOrNull()
             if (result != null) return result
         }
         if (code == importKeyTransaction && reply != null && !reply.hasException()) {
             val raw = runCatching {
                 data.enforceInterface(IKeystoreSecurityLevel.DESCRIPTOR)
                 val keyDescriptor = data.readTypedObject(KeyDescriptor.CREATOR) ?: return@runCatching
-                Log.i(
-                    TAG,
-                    "importKey succeeded, clearing generated state for uid=$callingUid alias=${keyDescriptor.alias}",
+                Logger.i(
+                    "importKey succeeded, clearing generated state for uid=$callingUid alias=${keyDescriptor.alias}"
                 )
                 cleanupKey(callingUid, keyDescriptor.alias)
             }
-            raw.onFailure { Log.e(TAG, "parse importKey request", it) }
+            raw.onFailure { Logger.e("parse importKey request", it) }
         }
         return Skip
     }
@@ -564,9 +553,9 @@ class SecurityLevelInterceptor(private val original: IKeystoreSecurityLevel, pri
                     if (pk.keyPair != null) keyPairs[key] = Pair(pk.keyPair, pk.chain)
                     if (pk.nspace != 0L) keysByNspace[pk.nspace] = key
                     if (pk.skipLeafHack) skipLeafHacks[key] = true
-                    Log.i(TAG, "Restored persisted key uid=${pk.uid} alias=${pk.alias}")
+                    Logger.i("Restored persisted key uid=${pk.uid} alias=${pk.alias}")
                 }
-                raw.onFailure { Log.e(TAG, "Failed to restore persisted key uid=${pk.uid} alias=${pk.alias}", it) }
+                raw.onFailure { Logger.e("Failed to restore persisted key uid=${pk.uid} alias=${pk.alias}", it) }
             }
     }
 

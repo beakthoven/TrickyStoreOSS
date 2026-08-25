@@ -4,10 +4,13 @@
 #include <android/log.h>
 
 #include <cstdarg>
+#include <cstring>
+#include <sys/system_properties.h>
 
 #include "logging.hpp"
 
 namespace logging {
+
 void log(int prio, const char *tag, const char *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);

@@ -12,8 +12,7 @@ import android.os.ServiceManager
 import android.os.ServiceSpecificException
 import android.security.KeyStore
 import android.security.keystore.KeystoreResponse
-import android.util.Log
-import io.github.beakthoven.TrickyStoreOSS.logging.TAG
+import io.github.beakthoven.TrickyStoreOSS.logging.Logger
 import kotlin.system.exitProcess
 
 abstract class BaseKeystoreInterceptor : BinderInterceptor() {
@@ -28,7 +27,7 @@ abstract class BaseKeystoreInterceptor : BinderInterceptor() {
     protected abstract val processName: String
 
     fun tryRunKeystoreInterceptor(): Boolean {
-        Log.i(TAG, "Trying to register ${this::class.simpleName} (attempt $triedCount)...")
+        Logger.i("Trying to register ${this::class.simpleName} (attempt $triedCount)...")
 
         val service = getService() ?: return false
         val backdoor = getBinderBackdoor(service)
@@ -44,7 +43,7 @@ abstract class BaseKeystoreInterceptor : BinderInterceptor() {
 
     protected open fun setupInterceptor(service: IBinder, backdoor: IBinder): Boolean {
         keystore = service
-        Log.i(TAG, "Registering for $serviceName: $keystore")
+        Logger.i("Registering for $serviceName: $keystore")
 
         registerBinderInterceptor(backdoor, service, this)
         service.linkToDeath(createDeathRecipient(), 0)
@@ -55,7 +54,7 @@ abstract class BaseKeystoreInterceptor : BinderInterceptor() {
 
     private fun handleMissingBackdoor(): Boolean {
         if (triedCount >= maxRetries) {
-            Log.e(TAG, "Tried injection $maxRetries times but still no backdoor, exiting")
+            Logger.e("Tried injection $maxRetries times but still no backdoor, exiting")
             exitProcess(1)
         }
 
@@ -69,25 +68,25 @@ abstract class BaseKeystoreInterceptor : BinderInterceptor() {
     }
 
     protected open fun performInjection() {
-        Log.i(TAG, "Attempting to inject into $processName...")
+        Logger.i("Attempting to inject into $processName...")
 
         val command = arrayOf("/system/bin/sh", "-c", injectionCommand)
-        Log.d(TAG, "Injection command: ${command.joinToString(" ")}")
+        Logger.d("Injection command: ${command.joinToString(" ")}")
 
         val process = Runtime.getRuntime().exec(command)
 
         if (process.waitFor() != 0) {
-            Log.e(TAG, "Injection failed! Daemon will exit")
+            Logger.e("Injection failed! Daemon will exit")
             exitProcess(1)
         }
 
-        Log.i(TAG, "Injection completed successfully")
+        Logger.i("Injection completed successfully")
     }
 
     protected open fun createDeathRecipient(): IBinder.DeathRecipient =
         object : IBinder.DeathRecipient {
             override fun binderDied() {
-                Log.d(TAG, "$serviceName died, daemon restarting")
+                Logger.d("$serviceName died, daemon restarting")
                 exitProcess(0)
             }
         }
