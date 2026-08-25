@@ -60,6 +60,41 @@ jobs:
         with:
           subject-path: ${{ steps.zip.outputs.path }}
 
+      - name: Generate release notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || true)
+          {
+            echo "## Commits"
+            echo
+            if [ -n "$PREV_TAG" ]; then
+              git log "$PREV_TAG..HEAD" --pretty='- %s (%h)'
+            else
+              git log --pretty='- %s (%h)'
+            fi
+          } > notes.md
+
+          if [ -n "$PREV_TAG" ]; then
+            SINCE=$(gh release view "$PREV_TAG" --json publishedAt --jq '.publishedAt[:10]' || git log -1 --format=%cs "$PREV_TAG")
+
+            CLOSED=$(gh api -X GET search/issues -f "q=repo:$REPO is:issue closed:>=$SINCE" -f per_page=100 \
+              --jq '.items[] | "- #\(.number) \(.title)"')
+            if [ -n "$CLOSED" ]; then
+              printf '\n## Closed issues\n\n%s\n' "$CLOSED" >> notes.md
+            fi
+
+            OPENED=$(gh api -X GET search/issues -f "q=repo:$REPO is:issue created:>=$SINCE is:open" -f per_page=100 \
+              --jq '.items[] | "- #\(.number) \(.title)"')
+            if [ -n "$OPENED" ]; then
+              printf '\n## Opened issues\n\n%s\n' "$OPENED" >> notes.md
+            fi
+
+            printf '\n**Full Changelog**: https://github.com/%s/compare/%s...%s\n' "$REPO" "$PREV_TAG" "$TAG" >> notes.md
+          fi
+
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -67,9 +102,12 @@ jobs:
           gh release create "${{ github.ref_name }}" \
             "${{ steps.zip.outputs.path }}" \
             --title "${{ github.ref_name }}" \
-            --generate-notes
+            --notes-file notes.md
 
-      - name: Publish changelog metadata
-        uses: ./.github/workflows/changelogs.yml
-        with:
-          tag: ${{ github.ref_name }}
+  publish-changelog:
+    needs: release
+    permissions:
+      contents: write
+    uses: ./.github/workflows/changelogs.yml
+    with:
+      tag: ${{ github.ref_name }}
