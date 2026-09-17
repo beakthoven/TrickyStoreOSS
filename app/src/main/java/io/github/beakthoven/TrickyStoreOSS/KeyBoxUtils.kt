@@ -89,7 +89,7 @@ object KeyBoxUtils {
             val derived = keyPair.private.algorithm
             val algorithmName =
                 when (derived.uppercase()) {
-                    "ECDSA" -> KeyProperties.KEY_ALGORITHM_EC
+                    //"ECDSA" -> KeyProperties.KEY_ALGORITHM_EC
                     KeyProperties.KEY_ALGORITHM_EC -> KeyProperties.KEY_ALGORITHM_EC
                     KeyProperties.KEY_ALGORITHM_RSA -> KeyProperties.KEY_ALGORITHM_RSA
                     else -> derived
