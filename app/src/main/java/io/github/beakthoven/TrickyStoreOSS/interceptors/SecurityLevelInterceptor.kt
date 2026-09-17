@@ -411,19 +411,6 @@ class SecurityLevelInterceptor(private val original: IKeystoreSecurityLevel, pri
         val key = Key(callingUid, keyDescriptor.alias)
         keysByNspace[keyDescriptor.nspace] = key
         if (keyPair != null && chain != null) keyPairs[key] = Pair(keyPair, chain)
-        if (
-            kgp.algorithm == Algorithm.RSA &&
-            kgp.padding.contains(KeymasterDefs.KM_PAD_RSA_OAEP) &&
-            kgp.mgfDigest.isEmpty()
-        ) {
-            kgp.mgfDigest = mutableListOf(
-                KeymasterDefs.KM_DIGEST_SHA1,
-                KeymasterDefs.KM_DIGEST_SHA_2_224,
-                KeymasterDefs.KM_DIGEST_SHA_2_256,
-                KeymasterDefs.KM_DIGEST_SHA_2_384,
-                KeymasterDefs.KM_DIGEST_SHA_2_512,
-            )
-        }
         val response = buildResponse(chain, kgp, keyDescriptor, callingUid)
         keys[key] = Info(keyPair, secretKey, response, kgp)
         if (kgp.usageCountLimit > 0) usageRemaining[key] = kgp.usageCountLimit
