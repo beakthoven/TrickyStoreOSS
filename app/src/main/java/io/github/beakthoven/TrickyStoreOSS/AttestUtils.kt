@@ -6,6 +6,8 @@
 package io.github.beakthoven.TrickyStoreOSS
 
 import android.os.Build
+import android.os.ServiceManager
+import android.os.SystemClock
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import io.github.beakthoven.TrickyStoreOSS.logging.Logger
@@ -38,8 +40,26 @@ object AttestUtils {
 
     private val keygen_alias = "TrickyStoreOSS_attest"
 
+    private const val AAID_PROVIDER = "sec_key_att_app_id_provider"
+    private const val AAID_PROVIDER_TIMEOUT_MS = 120_000L
+
+    // keystore2 gets the attestation application id from system_server. Up to Android 13 it gives up
+    // after 5 s and then dereferences the null binder, so an attested keygen this early kills it.
+    private fun waitForAaidProvider() {
+        val deadline = SystemClock.uptimeMillis() + AAID_PROVIDER_TIMEOUT_MS
+        while (ServiceManager.checkService(AAID_PROVIDER) == null) {
+            if (SystemClock.uptimeMillis() >= deadline) {
+                Logger.w("$AAID_PROVIDER not registered after ${AAID_PROVIDER_TIMEOUT_MS}ms, checking TEE anyway")
+                return
+            }
+            Thread.sleep(500)
+        }
+    }
+
     private fun isTEEWorking(): Boolean {
         return try {
+            waitForAaidProvider()
+
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                 android.app.ActivityThread.initializeMainlineModules()
             }
