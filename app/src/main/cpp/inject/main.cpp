@@ -40,51 +40,85 @@ constexpr size_t kMaxPathLength = 4096;
 constexpr const char *kSystemFileContext = "u:object_r:system_file:s0";
 constexpr const char *kLibcModule = "libc.so";
 constexpr const char *kLibdlModule = "libdl.so";
-constexpr const char *kEntrySymbol = "entry";
 } // namespace constants
 
-class RemoteLibraryHandle {
+class SavedRegistersGuard {
 public:
-    RemoteLibraryHandle(int pid, int fd, uintptr_t handle) : pid_(pid), fd_(fd), handle_(handle) {}
+    SavedRegistersGuard(int pid, const struct user_regs_struct &regs, bool &detach_allowed)
+        : pid_(pid), regs_(regs), detach_allowed_(detach_allowed) {}
 
-    ~RemoteLibraryHandle() {
-        if (fd_ != -1) {
-            struct user_regs_struct regs{};
-            std::vector<ts::MapInfo> local_map, remote_map;
-            if (get_regs(pid_, regs)) {
-                local_map = ts::MapInfo::Scan();
-                remote_map = ts::MapInfo::Scan(std::to_string(pid_));
-                if (auto close_addr = find_func_addr(local_map, remote_map, constants::kLibcModule, "close")) {
-                    std::vector<uintptr_t> args = {static_cast<uintptr_t>(fd_)};
-                    remote_call(pid_, regs, reinterpret_cast<uintptr_t>(close_addr), 0, args);
-                }
-            }
+    ~SavedRegistersGuard() {
+        if (active_ && !restore()) {
+            detach_allowed_ = false;
+            LOGE("Failed to restore original registers; leaving target stopped");
         }
     }
 
-    RemoteLibraryHandle(const RemoteLibraryHandle &) = delete;
-    RemoteLibraryHandle &operator=(const RemoteLibraryHandle &) = delete;
-    RemoteLibraryHandle(RemoteLibraryHandle &&other) noexcept : pid_(other.pid_), fd_(other.fd_), handle_(other.handle_) {
-        other.fd_ = -1;
-        other.handle_ = 0;
+    bool restore() {
+        if (!active_)
+            return true;
+        if (!set_regs(pid_, regs_))
+            return false;
+        active_ = false;
+        return true;
     }
 
-    uintptr_t handle() const {
-        return handle_;
+private:
+    int pid_;
+    struct user_regs_struct regs_;
+    bool &detach_allowed_;
+    bool active_ = true;
+};
+
+class RemoteFdGuard {
+public:
+    RemoteFdGuard(int pid, int fd, uintptr_t close_addr, struct user_regs_struct &regs, int *pending_signal)
+        : pid_(pid), fd_(fd), close_addr_(close_addr), regs_(regs), pending_signal_(pending_signal) {}
+
+    ~RemoteFdGuard() {
+        if (fd_ >= 0 && !(pending_signal_ && *pending_signal_))
+            close();
     }
-    int fd() const {
-        return fd_;
+
+    bool close() {
+        if (fd_ < 0)
+            return true;
+        if (pending_signal_ && *pending_signal_) {
+            LOGE("Leaving remote fd %d open because the target has an unexpected signal stop", fd_);
+            return false;
+        }
+        if (!close_addr_) {
+            LOGE("Cannot close remote fd %d: close() was not resolved", fd_);
+            return false;
+        }
+        int fd = fd_;
+        std::vector<uintptr_t> args = {static_cast<uintptr_t>(fd)};
+        auto result = remote_call(pid_, regs_, close_addr_, 0, args, pending_signal_);
+        if (!result || *result != 0) {
+            LOGE("Failed to close remote fd %d", fd);
+            return false;
+        }
+        fd_ = -1;
+        return true;
+    }
+
+    int release() {
+        int fd = fd_;
+        fd_ = -1;
+        return fd;
     }
 
 private:
     int pid_;
     int fd_;
-    uintptr_t handle_;
+    uintptr_t close_addr_;
+    struct user_regs_struct &regs_;
+    int *pending_signal_;
 };
 
 static std::optional<int> transfer_fd_to_remote(int pid, const char *lib_path, struct user_regs_struct &regs,
-                                                const std::vector<ts::MapInfo> &local_map,
-                                                const std::vector<ts::MapInfo> &remote_map) {
+                                                const std::vector<ts::MapInfo> &local_map, const std::vector<ts::MapInfo> &remote_map,
+                                                int *pending_signal) {
     if (!set_sockcreate_con(constants::kSystemFileContext)) {
         LOGE("Failed to set socket creation context");
         return std::nullopt;
@@ -125,31 +159,38 @@ static std::optional<int> transfer_fd_to_remote(int pid, const char *lib_path, s
         return std::nullopt;
     }
     std::vector<uintptr_t> args;
-    auto get_remote_errno = [&]() -> int {
+    auto get_remote_errno = [&]() -> std::optional<int> {
         if (!funcs.errno_addr)
-            return 0;
+            return std::nullopt;
         args.clear();
-        auto addr = remote_call(pid, regs, reinterpret_cast<uintptr_t>(funcs.errno_addr), 0, args);
+        auto addr = remote_call(pid, regs, reinterpret_cast<uintptr_t>(funcs.errno_addr), 0, args, pending_signal);
+        if (!addr || *addr == 0)
+            return std::nullopt;
         int err = 0;
-        if (!read_proc(pid, addr, &err, sizeof(err)))
-            return 0;
+        if (read_proc(pid, *addr, &err, sizeof(err)) != sizeof(err))
+            return std::nullopt;
         return err;
     };
-
-    auto close_remote = [&](int fd) {
-        args = {static_cast<uintptr_t>(fd)};
-        if (remote_call(pid, regs, reinterpret_cast<uintptr_t>(funcs.close_addr), 0, args) != 0) {
-            LOGE("Failed to close remote fd: %d", fd);
-        }
+    auto log_remote_failure = [&](const char *operation) {
+        auto remote_errno = get_remote_errno();
+        if (remote_errno)
+            LOGE("%s failed with remote errno %d: %s", operation, *remote_errno, strerror(*remote_errno));
+        else
+            LOGE("%s failed; remote errno unavailable", operation);
     };
 
     args = {AF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC, 0};
-    int remote_fd = static_cast<int>(remote_call(pid, regs, reinterpret_cast<uintptr_t>(funcs.socket_addr), 0, args));
-    if (remote_fd == -1) {
-        errno = get_remote_errno();
-        PLOGE("remote socket creation failed");
+    auto socket_result = remote_call(pid, regs, reinterpret_cast<uintptr_t>(funcs.socket_addr), 0, args, pending_signal);
+    if (!socket_result) {
+        LOGE("Remote socket call failed");
         return std::nullopt;
     }
+    int remote_fd = static_cast<int>(static_cast<intptr_t>(*socket_result));
+    if (remote_fd == -1) {
+        log_remote_failure("remote socket creation");
+        return std::nullopt;
+    }
+    RemoteFdGuard remote_socket_guard(pid, remote_fd, reinterpret_cast<uintptr_t>(funcs.close_addr), regs, pending_signal);
 
     auto magic = generateMagic(constants::kMagicLength);
     struct sockaddr_un sock_addr{.sun_family = AF_UNIX, .sun_path = {0}};
@@ -157,26 +198,33 @@ static std::optional<int> transfer_fd_to_remote(int pid, const char *lib_path, s
     socklen_t addr_len = sizeof(sock_addr.sun_family) + 1 + magic.size();
 
     auto remote_addr = push_memory(pid, regs, &sock_addr, sizeof(sock_addr));
+    if (!remote_addr)
+        return std::nullopt;
     args = {static_cast<uintptr_t>(remote_fd), remote_addr, static_cast<uintptr_t>(addr_len)};
-    auto bind_result = remote_call(pid, regs, reinterpret_cast<uintptr_t>(funcs.bind_addr), 0, args);
-    if (bind_result == static_cast<uintptr_t>(-1)) {
-        errno = get_remote_errno();
-        PLOGE("remote bind failed");
-        close_remote(remote_fd);
+    auto bind_result = remote_call(pid, regs, reinterpret_cast<uintptr_t>(funcs.bind_addr), 0, args, pending_signal);
+    if (!bind_result) {
+        LOGE("Remote bind call failed");
+        return std::nullopt;
+    }
+    if (static_cast<intptr_t>(*bind_result) == -1) {
+        log_remote_failure("remote bind");
         return std::nullopt;
     }
     char cmsgbuf[CMSG_SPACE(sizeof(int))] = {0};
     auto remote_cmsgbuf = push_memory(pid, regs, &cmsgbuf, sizeof(cmsgbuf));
+    if (!remote_cmsgbuf)
+        return std::nullopt;
 
     struct msghdr msg_hdr{};
     msg_hdr.msg_control = reinterpret_cast<void *>(remote_cmsgbuf);
     msg_hdr.msg_controllen = sizeof(cmsgbuf);
     auto remote_hdr = push_memory(pid, regs, &msg_hdr, sizeof(msg_hdr));
+    if (!remote_hdr)
+        return std::nullopt;
 
     args = {static_cast<uintptr_t>(remote_fd), remote_hdr, MSG_WAITALL};
     if (!remote_pre_call(pid, regs, reinterpret_cast<uintptr_t>(funcs.recvmsg_addr), 0, args)) {
         LOGE("Failed to start remote recvmsg call");
-        close_remote(remote_fd);
         return std::nullopt;
     }
 
@@ -184,58 +232,65 @@ static std::optional<int> transfer_fd_to_remote(int pid, const char *lib_path, s
     msg_hdr.msg_name = &sock_addr;
     msg_hdr.msg_namelen = addr_len;
 
-    {
-        auto *cmsg = CMSG_FIRSTHDR(&msg_hdr);
-        cmsg->cmsg_len = CMSG_LEN(sizeof(int));
-        cmsg->cmsg_level = SOL_SOCKET;
-        cmsg->cmsg_type = SCM_RIGHTS;
-        *reinterpret_cast<int *>(CMSG_DATA(cmsg)) = local_lib_fd;
+    auto *cmsg = CMSG_FIRSTHDR(&msg_hdr);
+    if (!cmsg) {
+        LOGE("Failed to prepare fd control message");
+        return std::nullopt;
     }
+    cmsg->cmsg_len = CMSG_LEN(sizeof(int));
+    cmsg->cmsg_level = SOL_SOCKET;
+    cmsg->cmsg_type = SCM_RIGHTS;
+    *reinterpret_cast<int *>(CMSG_DATA(cmsg)) = local_lib_fd;
 
     if (sendmsg(local_socket, &msg_hdr, 0) == -1) {
         PLOGE("Failed to send fd to remote process");
-        close_remote(remote_fd);
         return std::nullopt;
     }
 
-    auto recvmsg_result = static_cast<ssize_t>(remote_post_call(pid, regs, 0));
-    if (recvmsg_result == -1) {
-        errno = get_remote_errno();
-        PLOGE("Remote recvmsg failed");
-        close_remote(remote_fd);
+    auto recvmsg_result = remote_post_call(pid, regs, 0, pending_signal);
+    if (!recvmsg_result) {
+        LOGE("Remote recvmsg call failed");
+        return std::nullopt;
+    }
+    if (static_cast<intptr_t>(*recvmsg_result) == -1) {
+        log_remote_failure("remote recvmsg");
         return std::nullopt;
     }
 
     if (read_proc(pid, remote_cmsgbuf, &cmsgbuf, sizeof(cmsgbuf)) != sizeof(cmsgbuf)) {
-        LOGE("Failed to read control message from remote process");
-        close_remote(remote_fd);
+        LOGE("Failed to read control message from remote process; transferred fd is unknown and cannot be cleaned up safely");
         return std::nullopt;
     }
 
-    auto *cmsg = CMSG_FIRSTHDR(&msg_hdr);
+    cmsg = CMSG_FIRSTHDR(&msg_hdr);
     if (!cmsg || cmsg->cmsg_len != CMSG_LEN(sizeof(int)) || cmsg->cmsg_level != SOL_SOCKET || cmsg->cmsg_type != SCM_RIGHTS) {
-        LOGE("Invalid control message received from remote process");
-        close_remote(remote_fd);
+        LOGE("Invalid control message received from remote process; transferred fd is unknown and cannot be cleaned up safely");
         return std::nullopt;
     }
 
     int transferred_fd = *reinterpret_cast<int *>(CMSG_DATA(cmsg));
+    if (transferred_fd < 0) {
+        LOGE("SCM_RIGHTS control message contained an invalid fd");
+        return std::nullopt;
+    }
     LOGD("Successfully transferred fd %d to remote process", transferred_fd);
-    close_remote(remote_fd);
-    return transferred_fd;
+    RemoteFdGuard transferred_fd_guard(pid, transferred_fd, reinterpret_cast<uintptr_t>(funcs.close_addr), regs, pending_signal);
+    if (!remote_socket_guard.close())
+        return std::nullopt;
+    return transferred_fd_guard.release();
 }
 
 static std::string get_remote_dlerror(int pid, struct user_regs_struct &regs, const std::vector<ts::MapInfo> &local_map,
-                                     const std::vector<ts::MapInfo> &remote_map, uintptr_t libc_return_addr) {
+                                      const std::vector<ts::MapInfo> &remote_map, uintptr_t libc_return_addr, int *pending_signal) {
     auto dlerror_addr = find_func_addr(local_map, remote_map, constants::kLibdlModule, "dlerror");
     if (!dlerror_addr) {
         return "Failed to find dlerror function";
     }
 
     std::vector<uintptr_t> args;
-    auto dlerror_str_addr = remote_call(pid, regs, reinterpret_cast<uintptr_t>(dlerror_addr), libc_return_addr, args);
-    if (dlerror_str_addr == 0) {
-        return "dlerror returned null";
+    auto dlerror_str_addr = remote_call(pid, regs, reinterpret_cast<uintptr_t>(dlerror_addr), libc_return_addr, args, pending_signal);
+    if (!dlerror_str_addr || *dlerror_str_addr == 0) {
+        return "dlerror returned null or remote call failed";
     }
 
     auto strlen_addr = find_func_addr(local_map, remote_map, constants::kLibcModule, "strlen");
@@ -243,25 +298,23 @@ static std::string get_remote_dlerror(int pid, struct user_regs_struct &regs, co
         return "Failed to find strlen function";
     }
 
-    args.clear();
-    args.push_back(dlerror_str_addr);
-    auto dlerror_len = remote_call(pid, regs, reinterpret_cast<uintptr_t>(strlen_addr), libc_return_addr, args);
-    if (dlerror_len <= 0 || dlerror_len > 1024) {
-        return "Invalid dlerror string length";
+    args = {*dlerror_str_addr};
+    auto dlerror_len = remote_call(pid, regs, reinterpret_cast<uintptr_t>(strlen_addr), libc_return_addr, args, pending_signal);
+    if (!dlerror_len || *dlerror_len == 0 || *dlerror_len > 1024) {
+        return "Invalid dlerror string length or remote call failed";
     }
 
-    std::string err;
-    err.resize(dlerror_len + 1, 0);
-    if (read_proc(pid, dlerror_str_addr, err.data(), dlerror_len) != dlerror_len) {
+    std::string err(*dlerror_len + 1, 0);
+    if (read_proc(pid, *dlerror_str_addr, err.data(), *dlerror_len) != static_cast<ssize_t>(*dlerror_len)) {
         return "Failed to read dlerror string";
     }
-    err.resize(dlerror_len);
+    err.resize(*dlerror_len);
     return err;
 }
 
 static std::optional<uintptr_t> remote_dlopen(int pid, struct user_regs_struct &regs, const std::vector<ts::MapInfo> &local_map,
                                               const std::vector<ts::MapInfo> &remote_map, int lib_fd, const char *lib_path,
-                                              uintptr_t libc_return_addr) {
+                                              uintptr_t libc_return_addr, int *pending_signal) {
     auto dlopen_addr = find_func_addr(local_map, remote_map, constants::kLibdlModule, "android_dlopen_ext");
     if (!dlopen_addr) {
         LOGW("Failed to find android_dlopen_ext in %s,", constants::kLibdlModule);
@@ -274,56 +327,69 @@ static std::optional<uintptr_t> remote_dlopen(int pid, struct user_regs_struct &
 
     uintptr_t remote_info = push_memory(pid, regs, &dlext_info, sizeof(dlext_info));
     uintptr_t remote_path = push_string(pid, regs, lib_path);
+    if (!remote_info || !remote_path)
+        return std::nullopt;
 
     std::vector<uintptr_t> args = {remote_path, RTLD_NOW, remote_info};
-    uintptr_t remote_handle = remote_call(pid, regs, reinterpret_cast<uintptr_t>(dlopen_addr), libc_return_addr, args);
-
-    if (remote_handle == 0) {
-        std::string error_msg = get_remote_dlerror(pid, regs, local_map, remote_map, libc_return_addr);
+    auto remote_handle = remote_call(pid, regs, reinterpret_cast<uintptr_t>(dlopen_addr), libc_return_addr, args, pending_signal);
+    if (!remote_handle) {
+        LOGE("Remote dlopen call failed");
+        return std::nullopt;
+    }
+    if (*remote_handle == 0) {
+        std::string error_msg = get_remote_dlerror(pid, regs, local_map, remote_map, libc_return_addr, pending_signal);
         LOGW("Primary dlopen failed for library: %s, dlerror: %s", lib_path, error_msg.c_str());
         return std::nullopt;
     }
 
-    LOGD("Successfully loaded library with handle: %p", reinterpret_cast<void *>(remote_handle));
-    return remote_handle;
+    LOGD("Successfully loaded library with handle: %p", reinterpret_cast<void *>(*remote_handle));
+    return *remote_handle;
 }
 
 static std::optional<uintptr_t> remote_find_entry(int pid, struct user_regs_struct &regs, const std::vector<ts::MapInfo> &local_map,
                                                   const std::vector<ts::MapInfo> &remote_map, uintptr_t remote_handle,
-                                                  uintptr_t libc_return_addr) {
+                                                  const char *entry_name, uintptr_t libc_return_addr, int *pending_signal) {
     auto dlsym_addr = find_func_addr(local_map, remote_map, constants::kLibdlModule, "dlsym");
     if (!dlsym_addr) {
         LOGE("Failed to find dlsym in %s", constants::kLibdlModule);
         return std::nullopt;
     }
 
-    uintptr_t remote_symbol = push_string(pid, regs, constants::kEntrySymbol);
+    uintptr_t remote_symbol = push_string(pid, regs, entry_name);
+    if (!remote_symbol)
+        return std::nullopt;
 
     std::vector<uintptr_t> args = {remote_handle, remote_symbol};
-    uintptr_t entry_addr = remote_call(pid, regs, reinterpret_cast<uintptr_t>(dlsym_addr), libc_return_addr, args);
-
-    if (entry_addr == 0) {
-        std::string error_msg = get_remote_dlerror(pid, regs, local_map, remote_map, libc_return_addr);
-        LOGE("Failed to find entry symbol '%s' in remote library, dlerror: %s", constants::kEntrySymbol, error_msg.c_str());
+    auto entry_addr = remote_call(pid, regs, reinterpret_cast<uintptr_t>(dlsym_addr), libc_return_addr, args, pending_signal);
+    if (!entry_addr) {
+        LOGE("Remote dlsym call failed");
+        return std::nullopt;
+    }
+    if (*entry_addr == 0) {
+        std::string error_msg = get_remote_dlerror(pid, regs, local_map, remote_map, libc_return_addr, pending_signal);
+        LOGE("Failed to find entry symbol '%s' in remote library, dlerror: %s", entry_name, error_msg.c_str());
         return std::nullopt;
     }
 
-    LOGD("Found entry point at: %p", reinterpret_cast<void *>(entry_addr));
-    return entry_addr;
+    LOGD("Found entry point at: %p", reinterpret_cast<void *>(*entry_addr));
+    return *entry_addr;
 }
 
-static bool remote_call_entry(int pid, struct user_regs_struct &regs, uintptr_t entry_addr, uintptr_t remote_handle,
-                              uintptr_t libc_return_addr) {
+static std::optional<bool> remote_call_entry(int pid, struct user_regs_struct &regs, uintptr_t entry_addr, uintptr_t remote_handle,
+                                             uintptr_t libc_return_addr, int *pending_signal) {
     std::vector<uintptr_t> args = {remote_handle};
-    uintptr_t result = remote_call(pid, regs, entry_addr, libc_return_addr, args);
+    auto result = remote_call(pid, regs, entry_addr, libc_return_addr, args, pending_signal);
+    if (!result)
+        return std::nullopt;
 
-    LOGD("Entry point called with result: %p", reinterpret_cast<void *>(result));
-    return true;
+    LOGD("Entry point called with result: %p", reinterpret_cast<void *>(*result));
+    return *result != 0;
 }
 
 class PtraceAttachment {
 public:
-    explicit PtraceAttachment(int target_pid) : pid_(target_pid), attached_(false) {
+    PtraceAttachment(int target_pid, int &detach_signal, const bool &detach_allowed)
+        : pid_(target_pid), attached_(false), detach_signal_(detach_signal), detach_allowed_(detach_allowed) {
         if (ptrace(PTRACE_ATTACH, pid_, 0, 0) == -1) {
             PLOGE("Failed to attach to process %d", pid_);
             return;
@@ -333,17 +399,35 @@ public:
     }
 
     ~PtraceAttachment() {
-        if (attached_) {
-            if (ptrace(PTRACE_DETACH, pid_, 0, 0) == -1) {
-                PLOGE("Failed to detach from process %d", pid_);
-            } else {
-                LOGD("Successfully detached from process %d", pid_);
-            }
+        if (!attached_)
+            return;
+        if (detach_failed_) {
+            LOGE("Leaving process %d stopped after detach failure", pid_);
+        } else if (!detach()) {
+            LOGE("Leaving process %d stopped because automatic detach failed", pid_);
         }
     }
 
     bool is_attached() const {
         return attached_;
+    }
+
+    bool detach() {
+        if (!attached_)
+            return true;
+        if (!detach_allowed_) {
+            LOGE("Cannot detach process %d because register restoration failed", pid_);
+            detach_failed_ = true;
+            return false;
+        }
+        if (ptrace(PTRACE_DETACH, pid_, 0, reinterpret_cast<void *>(static_cast<intptr_t>(detach_signal_))) == -1) {
+            PLOGE("Failed to detach from process %d", pid_);
+            detach_failed_ = true;
+            return false;
+        }
+        attached_ = false;
+        LOGD("Successfully detached from process %d", pid_);
+        return true;
     }
 
     PtraceAttachment(const PtraceAttachment &) = delete;
@@ -352,12 +436,17 @@ public:
 private:
     int pid_;
     bool attached_;
+    int &detach_signal_;
+    const bool &detach_allowed_;
+    bool detach_failed_ = false;
 };
 
 bool inject_library(int pid, const char *lib_path, const char *entry_name) {
     LOGI("Starting injection of %s (entry: %s) into process %d", lib_path, entry_name, pid);
 
-    PtraceAttachment ptrace_guard(pid);
+    int pending_signal = 0;
+    bool detach_allowed = true;
+    PtraceAttachment ptrace_guard(pid, pending_signal, detach_allowed);
     if (!ptrace_guard.is_attached()) {
         return false;
     }
@@ -370,6 +459,8 @@ bool inject_library(int pid, const char *lib_path, const char *entry_name) {
 
     if (!WIFSTOPPED(status) || WSTOPSIG(status) != SIGSTOP) {
         LOGE("Process stopped for unexpected reason: %s", parse_status(status).c_str());
+        if (WIFSTOPPED(status))
+            pending_signal = WSTOPSIG(status);
         return false;
     }
 
@@ -379,6 +470,7 @@ bool inject_library(int pid, const char *lib_path, const char *entry_name) {
         return false;
     }
     backup_regs = current_regs;
+    SavedRegistersGuard registers_guard(pid, backup_regs, detach_allowed);
     LOGD("Process stopped and registers backed up");
 
     auto remote_map = ts::MapInfo::Scan(std::to_string(pid));
@@ -391,44 +483,56 @@ bool inject_library(int pid, const char *lib_path, const char *entry_name) {
     }
     LOGD("Found libc return address: %p", libc_return_addr);
 
-    auto lib_fd_opt = transfer_fd_to_remote(pid, lib_path, current_regs, local_map, remote_map);
+    auto close_addr = find_func_addr(local_map, remote_map, constants::kLibcModule, "close");
+    if (!close_addr) {
+        LOGE("Failed to find close in %s", constants::kLibcModule);
+        return false;
+    }
+
+    auto lib_fd_opt = transfer_fd_to_remote(pid, lib_path, current_regs, local_map, remote_map, &pending_signal);
     if (!lib_fd_opt) {
         LOGE("Failed to transfer library fd to remote process");
         return false;
     }
     int lib_fd = *lib_fd_opt;
+    RemoteFdGuard library_fd_guard(pid, lib_fd, reinterpret_cast<uintptr_t>(close_addr), current_regs, &pending_signal);
 
-    auto handle_opt =
-        remote_dlopen(pid, current_regs, local_map, remote_map, lib_fd, lib_path, reinterpret_cast<uintptr_t>(libc_return_addr));
+    auto handle_opt = remote_dlopen(pid, current_regs, local_map, remote_map, lib_fd, lib_path,
+                                    reinterpret_cast<uintptr_t>(libc_return_addr), &pending_signal);
     if (!handle_opt) {
         LOGE("Failed to load library in remote process");
         return false;
     }
     uintptr_t remote_handle = *handle_opt;
 
-    auto close_addr = find_func_addr(local_map, remote_map, constants::kLibcModule, "close");
-    if (close_addr) {
-        std::vector<uintptr_t> args = {static_cast<uintptr_t>(lib_fd)};
-        if (remote_call(pid, current_regs, reinterpret_cast<uintptr_t>(close_addr), 0, args) != 0) {
-            LOGW("Failed to close remote library fd: %d", lib_fd);
-        }
-    }
-
-    auto entry_opt =
-        remote_find_entry(pid, current_regs, local_map, remote_map, remote_handle, reinterpret_cast<uintptr_t>(libc_return_addr));
+    auto entry_opt = remote_find_entry(pid, current_regs, local_map, remote_map, remote_handle, entry_name,
+                                       reinterpret_cast<uintptr_t>(libc_return_addr), &pending_signal);
     if (!entry_opt) {
         LOGE("Failed to find entry point in remote library");
         return false;
     }
     uintptr_t entry_addr = *entry_opt;
 
-    if (!remote_call_entry(pid, current_regs, entry_addr, remote_handle, reinterpret_cast<uintptr_t>(libc_return_addr))) {
+    auto entry_result = remote_call_entry(pid, current_regs, entry_addr, remote_handle, reinterpret_cast<uintptr_t>(libc_return_addr),
+                                          &pending_signal);
+    if (!entry_result) {
         LOGE("Failed to call entry point");
         return false;
     }
+    if (!*entry_result) {
+        LOGE("Remote entry point rejected initialization");
+        return false;
+    }
 
-    if (!set_regs(pid, backup_regs)) {
+    if (!library_fd_guard.close())
+        return false;
+
+    if (!registers_guard.restore()) {
         LOGE("Failed to restore original registers");
+        return false;
+    }
+    if (!ptrace_guard.detach()) {
+        LOGE("Library injection completed, but target detach failed");
         return false;
     }
 

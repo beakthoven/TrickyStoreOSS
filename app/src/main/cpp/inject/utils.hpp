@@ -6,7 +6,9 @@
 #include <unistd.h>
 
 #include <map>
+#include <optional>
 #include <string>
+#include <vector>
 
 #include "maps.hpp"
 
@@ -56,10 +58,11 @@ void align_stack(struct user_regs_struct &regs, uintptr_t preserve_bytes = 0);
 uintptr_t push_memory(int pid, struct user_regs_struct &regs, const void *data, size_t length);
 uintptr_t push_string(int pid, struct user_regs_struct &regs, const char *str);
 
-uintptr_t remote_call(int pid, struct user_regs_struct &regs, uintptr_t func_addr, uintptr_t return_addr,
-                      std::vector<uintptr_t> &args);
+std::optional<uintptr_t> remote_call(int pid, struct user_regs_struct &regs, uintptr_t func_addr, uintptr_t return_addr,
+                                     std::vector<uintptr_t> &args, int *pending_signal = nullptr);
 bool remote_pre_call(int pid, struct user_regs_struct &regs, uintptr_t func_addr, uintptr_t return_addr, std::vector<uintptr_t> &args);
-uintptr_t remote_post_call(int pid, struct user_regs_struct &regs, uintptr_t expected_return_addr);
+std::optional<uintptr_t> remote_post_call(int pid, struct user_regs_struct &regs, uintptr_t expected_return_addr,
+                                          int *pending_signal = nullptr);
 
 bool wait_for_trace(int pid, int *status, int flags);
 std::string parse_status(int status);

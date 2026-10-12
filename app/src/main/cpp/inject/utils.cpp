@@ -80,7 +80,8 @@ ssize_t write_proc(int pid, uintptr_t remote_addr, const void *buf, size_t len, 
     }
 
     if (bytes_written != -1 && static_cast<size_t>(bytes_written) != len) {
-        LOGW("Partial write: %zd bytes written, %zu expected", bytes_written, len);
+        LOGE("Partial write: %zd bytes written, %zu expected", bytes_written, len);
+        return -1;
     }
 
     return bytes_written;
@@ -406,22 +407,29 @@ bool remote_pre_call(int pid, struct user_regs_struct &regs, uintptr_t func_addr
     return true;
 }
 
-uintptr_t remote_post_call(int pid, struct user_regs_struct &regs, uintptr_t expected_return_addr) {
+std::optional<uintptr_t> remote_post_call(int pid, struct user_regs_struct &regs, uintptr_t expected_return_addr,
+                                          int *pending_signal) {
     LOGV("Waiting for remote function call completion");
 
     int status;
     while (true) {
         if (!wait_for_trace(pid, &status, __WALL)) {
             LOGE("Failed to wait for remote function completion");
-            return 0;
+            return std::nullopt;
         }
-
-        if (!get_regs(pid, regs)) {
-            LOGE("Failed to get registers after remote call");
-            return 0;
+        if (!WIFSTOPPED(status)) {
+            LOGE("Remote function did not stop: %s", parse_status(status).c_str());
+            return std::nullopt;
         }
 
         int stop_signal = WSTOPSIG(status);
+        if (!get_regs(pid, regs)) {
+            LOGE("Failed to get registers after remote call");
+            if (pending_signal)
+                *pending_signal = stop_signal;
+            return std::nullopt;
+        }
+
         LOGV("Remote function stopped with signal: %s(%d) at address %p", sigabbrev_np(stop_signal), stop_signal,
              reinterpret_cast<void *>(regs.REG_IP));
 
@@ -429,14 +437,15 @@ uintptr_t remote_post_call(int pid, struct user_regs_struct &regs, uintptr_t exp
             if (static_cast<uintptr_t>(regs.REG_IP) != expected_return_addr) {
                 LOGE("Function returned to unexpected address %p (expected %p)", reinterpret_cast<void *>(regs.REG_IP),
                      reinterpret_cast<void *>(expected_return_addr));
-
                 siginfo_t crash_info;
                 if (ptrace(PTRACE_GETSIGINFO, pid, 0, &crash_info) == 0) {
                     LOGE("Crash details: si_code=%d si_addr=%p", crash_info.si_code, crash_info.si_addr);
                 } else {
                     PLOGE("Failed to get crash signal info");
                 }
-                return 0;
+                if (pending_signal)
+                    *pending_signal = stop_signal;
+                return std::nullopt;
             }
 
             uintptr_t return_value = regs.REG_RET;
@@ -444,24 +453,30 @@ uintptr_t remote_post_call(int pid, struct user_regs_struct &regs, uintptr_t exp
             return return_value;
         }
 
-        // Suppress benign signals (SIGCHLD from fork, etc.) and keep waiting
-        // for the expected SIGSEGV at the return address.
-        LOGV("Suppressing %s(%d) during remote call, continuing",
-             sigabbrev_np(stop_signal), stop_signal);
+        if (stop_signal != SIGCHLD) {
+            LOGE("Unexpected signal stop during remote call: %s(%d)", sigabbrev_np(stop_signal), stop_signal);
+            if (pending_signal)
+                *pending_signal = stop_signal;
+            return std::nullopt;
+        }
+
+        LOGV("Suppressing benign %s(%d) during remote call", sigabbrev_np(stop_signal), stop_signal);
         if (ptrace(PTRACE_CONT, pid, 0, 0) == -1) {
             PLOGE("Failed to continue after signal %s(%d)", sigabbrev_np(stop_signal), stop_signal);
-            return 0;
+            if (pending_signal)
+                *pending_signal = stop_signal;
+            return std::nullopt;
         }
     }
 }
 
-uintptr_t remote_call(int pid, struct user_regs_struct &regs, uintptr_t func_addr, uintptr_t return_addr,
-                      std::vector<uintptr_t> &args) {
+std::optional<uintptr_t> remote_call(int pid, struct user_regs_struct &regs, uintptr_t func_addr, uintptr_t return_addr,
+                                     std::vector<uintptr_t> &args, int *pending_signal) {
     if (!remote_pre_call(pid, regs, func_addr, return_addr, args)) {
         LOGE("Failed to prepare remote function call");
-        return 0;
+        return std::nullopt;
     }
-    return remote_post_call(pid, regs, return_addr);
+    return remote_post_call(pid, regs, return_addr, pending_signal);
 }
 
 bool wait_for_trace(int pid, int *status, int flags) {
