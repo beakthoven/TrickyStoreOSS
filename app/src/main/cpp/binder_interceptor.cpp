@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <queue>
 #include <shared_mutex>
 #include <span>
@@ -44,6 +45,7 @@ constexpr uint32_t kBackdoorCode = 0xdeadbeef;
 
 // AIDL user codes stay under this; system protocol codes (PING/INTERFACE/DUMP/...) sit above
 constexpr uint32_t kMaxUserTransactionCode = 0x00ffffff;
+constexpr size_t kMaxInterceptorCodes = 1024;
 } // namespace intercept_constants
 } // namespace
 
@@ -260,7 +262,9 @@ int intercepted_ioctl_function(int fd, int request, ...) {
 bool BinderInterceptor::shouldInterceptTransaction(const wp<BBinder> &target_binder, uint32_t code) const {
     ReadGuard guard{interceptor_registry_lock_};
     auto it = interceptor_registry_.find(target_binder);
-    if (it == interceptor_registry_.end()) return false;
+    if (it == interceptor_registry_.end()) {
+        return false;
+    }
     const auto &codes = it->second.codes;
     return codes.empty() || std::find(codes.begin(), codes.end(), code) != codes.end();
 }
@@ -275,10 +279,15 @@ status_t BinderInterceptor::onTransact(uint32_t code, const android::Parcel &dat
 }
 
 status_t BinderInterceptor::handleRegisterInterceptor(const android::Parcel &data) {
+    if (IPCThreadState::self()->getCallingUid() != 0) {
+        LOGE("Rejected interceptor registration from non-root uid=%d", IPCThreadState::self()->getCallingUid());
+        return PERMISSION_DENIED;
+    }
+
     sp<IBinder> target_binder, interceptor_binder;
 
-    if (data.readStrongBinder(&target_binder) != OK) {
-        LOGE("Failed to read target binder from registration data");
+    if (data.readStrongBinder(&target_binder) != OK || target_binder == nullptr) {
+        LOGE("Registration has no target binder");
         return BAD_VALUE;
     }
 
@@ -287,26 +296,32 @@ status_t BinderInterceptor::handleRegisterInterceptor(const android::Parcel &dat
         return BAD_VALUE;
     }
 
-    if (data.readStrongBinder(&interceptor_binder) != OK) {
-        LOGE("Failed to read interceptor binder from registration data");
+    if (data.readStrongBinder(&interceptor_binder) != OK || interceptor_binder == nullptr) {
+        LOGE("Registration has no interceptor binder");
         return BAD_VALUE;
     }
 
     int32_t count = 0;
-    if (data.readInt32(&count) != OK) {
-        LOGE("Failed to read transaction-code allow-list count");
+    if (data.readInt32(&count) != OK || count < 0 || static_cast<size_t>(count) > intercept_constants::kMaxInterceptorCodes ||
+        static_cast<size_t>(count) > data.dataAvail() / sizeof(uint32_t)) {
+        LOGE("Invalid transaction-code allow-list count: %d", count);
         return BAD_VALUE;
     }
-    if (count < 0) count = 0;
+
     std::vector<uint32_t> codes;
     codes.reserve(static_cast<size_t>(count));
     for (int32_t i = 0; i < count; ++i) {
         uint32_t c = 0;
-        if (data.readUint32(&c) != OK) {
-            LOGE("Failed to read transaction code #%d from registration data", i);
+        if (data.readUint32(&c) != OK || c > intercept_constants::kMaxUserTransactionCode) {
+            LOGE("Invalid transaction code #%d from registration data", i);
             return BAD_VALUE;
         }
         codes.push_back(c);
+    }
+
+    if (data.dataAvail() != 0) {
+        LOGE("Registration has %zu trailing bytes", data.dataAvail());
+        return BAD_VALUE;
     }
 
     {
@@ -329,7 +344,7 @@ status_t BinderInterceptor::handleRegisterInterceptor(const android::Parcel &dat
 
 bool BinderInterceptor::handleInterceptedTransaction(sp<BBinder> target_binder, uint32_t transaction_code, const Parcel &request_data,
                                                      Parcel *reply_data, uint32_t transaction_flags, status_t &result) {
-#define VALIDATE_STATUS(expr)                                   \
+#define VALIDATE_PRE_STATUS(expr)                               \
     do {                                                        \
         auto __result = (expr);                                 \
         if (__result != OK) {                                   \
@@ -342,7 +357,7 @@ bool BinderInterceptor::handleInterceptedTransaction(sp<BBinder> target_binder, 
     {
         ReadGuard read_guard{interceptor_registry_lock_};
         auto iterator = interceptor_registry_.find(target_binder);
-        if (iterator == interceptor_registry_.end()) {
+        if (iterator == interceptor_registry_.end() || iterator->second.interceptor_binder == nullptr) {
             LOGE("No interceptor found for target binder %p", target_binder.get());
             return false;
         }
@@ -354,79 +369,189 @@ bool BinderInterceptor::handleInterceptedTransaction(sp<BBinder> target_binder, 
 
     Parcel pre_request_data, pre_response_data, modified_request_data;
 
-    VALIDATE_STATUS(writeInterceptorCallData(pre_request_data, target_binder, transaction_code, transaction_flags, request_data));
-    VALIDATE_STATUS(interceptor_binder->transact(intercept_constants::kPreTransact, pre_request_data, &pre_response_data));
+    VALIDATE_PRE_STATUS(writeInterceptorCallData(pre_request_data, target_binder, transaction_code, transaction_flags, request_data));
+    VALIDATE_PRE_STATUS(interceptor_binder->transact(intercept_constants::kPreTransact, pre_request_data, &pre_response_data));
 
     int32_t pre_action_type;
-    VALIDATE_STATUS(validateInterceptorResponse(pre_response_data, pre_action_type));
+    VALIDATE_PRE_STATUS(validateInterceptorResponse(pre_response_data, pre_action_type));
 
     LOGD("Pre-transaction action type: %d", pre_action_type);
 
     switch (pre_action_type) {
     case intercept_constants::kActionSkip:
+        if (pre_response_data.dataAvail() != 0) {
+            LOGE("Pre-transaction skip response has %zu trailing bytes", pre_response_data.dataAvail());
+            return false;
+        }
         return false;
 
-    case intercept_constants::kActionOverrideReply:
-        result = pre_response_data.readInt32();
+    case intercept_constants::kActionOverrideReply: {
+        int32_t override_result = 0;
+        uint64_t reply_size = 0;
+        VALIDATE_PRE_STATUS(pre_response_data.readInt32(&override_result));
+        VALIDATE_PRE_STATUS(pre_response_data.readUint64(&reply_size));
+        if (reply_size > pre_response_data.dataAvail() || (!reply_data && reply_size != 0)) {
+            LOGE("Invalid pre-transaction reply size: %llu", static_cast<unsigned long long>(reply_size));
+            return false;
+        }
+        Parcel replacement_reply;
+        VALIDATE_PRE_STATUS(replacement_reply.appendFrom(&pre_response_data, pre_response_data.dataPosition(), reply_size));
+        pre_response_data.setDataPosition(pre_response_data.dataPosition() + reply_size);
+        if (pre_response_data.dataAvail() != 0) {
+            LOGE("Pre-transaction override response has %zu trailing bytes", pre_response_data.dataAvail());
+            return false;
+        }
+        result = override_result;
         if (reply_data) {
-            size_t reply_size = pre_response_data.readUint64();
-            VALIDATE_STATUS(reply_data->appendFrom(&pre_response_data, pre_response_data.dataPosition(), reply_size));
+            reply_data->freeData();
+            VALIDATE_PRE_STATUS(reply_data->appendFrom(&replacement_reply, 0, replacement_reply.dataSize()));
         }
         return true;
+    }
 
     case intercept_constants::kActionOverrideData: {
-        size_t data_size = pre_response_data.readUint64();
-        VALIDATE_STATUS(modified_request_data.appendFrom(&pre_response_data, pre_response_data.dataPosition(), data_size));
+        uint64_t data_size = 0;
+        VALIDATE_PRE_STATUS(pre_response_data.readUint64(&data_size));
+        if (data_size > pre_response_data.dataAvail()) {
+            LOGE("Invalid modified request size: %llu", static_cast<unsigned long long>(data_size));
+            return false;
+        }
+        VALIDATE_PRE_STATUS(modified_request_data.appendFrom(&pre_response_data, pre_response_data.dataPosition(), data_size));
+        pre_response_data.setDataPosition(pre_response_data.dataPosition() + data_size);
+        if (pre_response_data.dataAvail() != 0) {
+            LOGE("Pre-transaction override-data response has %zu trailing bytes", pre_response_data.dataAvail());
+            return false;
+        }
         break;
     }
 
     case intercept_constants::kActionContinue:
-    default:
-        VALIDATE_STATUS(modified_request_data.appendFrom(&request_data, 0, request_data.dataSize()));
+        if (pre_response_data.dataAvail() != 0) {
+            LOGE("Pre-transaction continue response has %zu trailing bytes", pre_response_data.dataAvail());
+            return false;
+        }
+        VALIDATE_PRE_STATUS(modified_request_data.appendFrom(&request_data, 0, request_data.dataSize()));
         break;
+
+    default:
+        return false;
     }
 
     result = target_binder->transact(transaction_code, modified_request_data, reply_data, transaction_flags);
 
+    auto preserve_original_result = [&](status_t status, const char *operation) {
+        LOGE("Post-transaction operation failed: %s = %d; preserving original result/reply", operation, status);
+        return true;
+    };
+
     Parcel post_request_data, post_response_data;
 
-    VALIDATE_STATUS(post_request_data.writeStrongBinder(target_binder));
-    VALIDATE_STATUS(post_request_data.writeUint32(transaction_code));
-    VALIDATE_STATUS(post_request_data.writeUint32(transaction_flags));
-    VALIDATE_STATUS(post_request_data.writeInt32(IPCThreadState::self()->getCallingUid()));
-    VALIDATE_STATUS(post_request_data.writeInt32(IPCThreadState::self()->getCallingPid()));
-    VALIDATE_STATUS(post_request_data.writeInt32(result));
-    VALIDATE_STATUS(post_request_data.writeUint64(request_data.dataSize()));
-    VALIDATE_STATUS(post_request_data.appendFrom(&request_data, 0, request_data.dataSize()));
+    if (auto status = post_request_data.writeStrongBinder(target_binder); status != OK) {
+        return preserve_original_result(status, "post_request_data.writeStrongBinder");
+    }
+    if (auto status = post_request_data.writeUint32(transaction_code); status != OK) {
+        return preserve_original_result(status, "post_request_data.writeUint32(transaction_code)");
+    }
+    if (auto status = post_request_data.writeUint32(transaction_flags); status != OK) {
+        return preserve_original_result(status, "post_request_data.writeUint32(transaction_flags)");
+    }
+    if (auto status = post_request_data.writeInt32(IPCThreadState::self()->getCallingUid()); status != OK) {
+        return preserve_original_result(status, "post_request_data.writeInt32(callingUid)");
+    }
+    if (auto status = post_request_data.writeInt32(IPCThreadState::self()->getCallingPid()); status != OK) {
+        return preserve_original_result(status, "post_request_data.writeInt32(callingPid)");
+    }
+    if (auto status = post_request_data.writeInt32(result); status != OK) {
+        return preserve_original_result(status, "post_request_data.writeInt32(result)");
+    }
+    if (auto status = post_request_data.writeUint64(request_data.dataSize()); status != OK) {
+        return preserve_original_result(status, "post_request_data.writeUint64(request_size)");
+    }
+    if (auto status = post_request_data.appendFrom(&request_data, 0, request_data.dataSize()); status != OK) {
+        return preserve_original_result(status, "post_request_data.appendFrom(request)");
+    }
 
     size_t reply_size = reply_data ? reply_data->dataSize() : 0;
-    VALIDATE_STATUS(post_request_data.writeUint64(reply_size));
+    if (auto status = post_request_data.writeUint64(reply_size); status != OK) {
+        return preserve_original_result(status, "post_request_data.writeUint64(reply_size)");
+    }
     LOGD("Transaction sizes: request=%zu reply=%zu", request_data.dataSize(), reply_size);
 
     if (reply_data && reply_size > 0) {
-        VALIDATE_STATUS(post_request_data.appendFrom(reply_data, 0, reply_size));
+        if (auto status = post_request_data.appendFrom(reply_data, 0, reply_size); status != OK) {
+            return preserve_original_result(status, "post_request_data.appendFrom(reply)");
+        }
     }
 
-    VALIDATE_STATUS(interceptor_binder->transact(intercept_constants::kPostTransact, post_request_data, &post_response_data));
+    if (auto status = interceptor_binder->transact(intercept_constants::kPostTransact, post_request_data, &post_response_data);
+        status != OK) {
+        return preserve_original_result(status, "interceptor_binder->transact(post)");
+    }
 
     int32_t post_action_type;
-    VALIDATE_STATUS(validateInterceptorResponse(post_response_data, post_action_type));
+    if (auto status = validateInterceptorResponse(post_response_data, post_action_type); status != OK) {
+        return preserve_original_result(status, "validateInterceptorResponse(post)");
+    }
 
     LOGD("Post-transaction action type: %d", post_action_type);
 
     if (post_action_type == intercept_constants::kActionOverrideReply) {
-        result = post_response_data.readInt32();
-        if (reply_data) {
-            size_t new_reply_size = post_response_data.readUint64();
-            reply_data->freeData();
-            VALIDATE_STATUS(reply_data->appendFrom(&post_response_data, post_response_data.dataPosition(), new_reply_size));
-            LOGD("Reply overridden: original_size=%zu new_size=%zu", reply_size, new_reply_size);
+        int32_t override_result = 0;
+        uint64_t new_reply_size = 0;
+        if (auto status = post_response_data.readInt32(&override_result); status != OK) {
+            return preserve_original_result(status, "post_response_data.readInt32(result)");
         }
+        if (auto status = post_response_data.readUint64(&new_reply_size); status != OK) {
+            return preserve_original_result(status, "post_response_data.readUint64(reply_size)");
+        }
+        if (new_reply_size > post_response_data.dataAvail() || (!reply_data && new_reply_size != 0)) {
+            LOGE("Invalid post-transaction reply size: %llu", static_cast<unsigned long long>(new_reply_size));
+            return true;
+        }
+
+        Parcel replacement_reply;
+        if (auto status = replacement_reply.appendFrom(&post_response_data, post_response_data.dataPosition(), new_reply_size);
+            status != OK) {
+            return preserve_original_result(status, "replacement_reply.appendFrom(post_response)");
+        }
+        post_response_data.setDataPosition(post_response_data.dataPosition() + new_reply_size);
+        if (post_response_data.dataAvail() != 0) {
+            LOGE("Post-transaction override response has %zu trailing bytes", post_response_data.dataAvail());
+            return true;
+        }
+
+        if (reply_data) {
+            Parcel original_reply;
+            if (auto status = original_reply.appendFrom(reply_data, 0, reply_size); status != OK) {
+                return preserve_original_result(status, "original_reply.appendFrom(reply)");
+            }
+            if (auto status = reply_data->setDataSize(0); status != OK) {
+                return preserve_original_result(status, "reply_data.setDataSize(0)");
+            }
+            if (auto status = reply_data->appendFrom(&replacement_reply, 0, replacement_reply.dataSize()); status != OK) {
+                if (auto restore_status = reply_data->setDataSize(0); restore_status != OK) {
+                    LOGE("Failed to clear reply before restoring original reply: %d", restore_status);
+                }
+                if (auto restore_status = reply_data->appendFrom(&original_reply, 0, original_reply.dataSize());
+                    restore_status != OK) {
+                    LOGE("Failed to restore original reply after override failure: %d", restore_status);
+                }
+                return preserve_original_result(status, "reply_data.appendFrom(replacement_reply)");
+            }
+            LOGD("Reply overridden: original_size=%zu new_size=%llu", reply_size, static_cast<unsigned long long>(new_reply_size));
+        }
+        result = override_result;
+    } else if (post_action_type != intercept_constants::kActionSkip && post_action_type != intercept_constants::kActionContinue) {
+        LOGE("Invalid post-transaction action type: %d", post_action_type);
+        return true;
+    } else if (post_response_data.dataAvail() != 0) {
+        LOGE("Post-transaction response has %zu trailing bytes", post_response_data.dataAvail());
+        return true;
     }
 
     return true;
 
-#undef VALIDATE_STATUS
+#undef VALIDATE_PRE_STATUS
 }
 
 template <typename ParcelWriter>
@@ -485,14 +610,28 @@ constexpr std::string_view kBinderLibraryName = "libbinder.so";
 constexpr std::string_view kCoreBundleLibraryName = "libcore_bundle.so";
 constexpr std::string_view kIoctlFunctionName = "ioctl";
 struct plti g_plti_ctx;
+std::mutex g_initialization_lock;
+bool g_initialized = false;
+bool g_initialization_blocked = false;
 } // namespace
 
 bool initializeBinderInterception() {
+    std::lock_guard<std::mutex> lock{g_initialization_lock};
+    if (g_initialized) {
+        return true;
+    }
+    if (g_initialization_blocked) {
+        LOGE("Binder interception initialization is blocked after an unsafe hook rollback");
+        return false;
+    }
+
     g_binder_interceptor = sp<BinderInterceptor>::make();
     g_binder_stub = sp<BinderStub>::make();
 
     if (!g_binder_interceptor || !g_binder_stub) {
         LOGE("Failed to create binder interceptor components");
+        g_binder_interceptor.clear();
+        g_binder_stub.clear();
         return false;
     }
 
@@ -506,23 +645,23 @@ bool initializeBinderInterception() {
         binder_library_found = plti_add_lib(&g_plti_ctx, binder_library);
     }
     if (!binder_library_found) {
-        LOGE("Neither %s nor %s is available for Binder interception",
-             kBinderLibraryName.data(), kCoreBundleLibraryName.data());
+        LOGE("Neither %s nor %s is available for Binder interception", kBinderLibraryName.data(), kCoreBundleLibraryName.data());
+        plti_deinit(&g_plti_ctx);
         g_binder_interceptor.clear();
         g_binder_stub.clear();
         return false;
     }
 
     LOGI("Installing Binder ioctl interception in %s", binder_library);
-    if (!plti_add_hook(&g_plti_ctx, binder_library, kIoctlFunctionName.data(),
-                       reinterpret_cast<void *>(intercepted_ioctl_function),
+    if (!plti_add_hook(&g_plti_ctx, binder_library, kIoctlFunctionName.data(), reinterpret_cast<void *>(intercepted_ioctl_function),
                        reinterpret_cast<void **>(&original_ioctl_function))) {
         LOGE("Failed to hook %s in %s", kIoctlFunctionName.data(), binder_library);
-        g_binder_interceptor.clear();
-        g_binder_stub.clear();
+        g_initialization_blocked = true;
+        LOGE("Hook installation may have partially modified PLT state; retaining live PLTI context and interceptor state");
         return false;
     }
 
+    g_initialized = true;
     LOGI("Binder interception initialized successfully");
     return true;
 }

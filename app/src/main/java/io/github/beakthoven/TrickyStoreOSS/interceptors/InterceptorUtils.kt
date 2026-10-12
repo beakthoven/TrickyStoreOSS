@@ -10,6 +10,7 @@ import android.os.Parcel
 import android.os.Parcelable
 import android.os.ServiceManager
 import android.os.ServiceSpecificException
+import android.security.Credentials
 import android.security.KeyStore
 import android.security.keystore.KeystoreResponse
 import io.github.beakthoven.TrickyStoreOSS.logging.Logger
@@ -42,10 +43,14 @@ abstract class BaseKeystoreInterceptor : BinderInterceptor() {
     protected open fun getService(): IBinder? = ServiceManager.getService(serviceName)
 
     protected open fun setupInterceptor(service: IBinder, backdoor: IBinder): Boolean {
-        keystore = service
-        Logger.i("Registering for $serviceName: $keystore")
+        Logger.i("Registering for $serviceName: $service")
 
-        registerBinderInterceptor(backdoor, service, this)
+        if (!registerBinderInterceptor(backdoor, service, this)) {
+            Logger.e("Failed to register interceptor for $serviceName; aborting setup")
+            return false
+        }
+
+        keystore = service
         service.linkToDeath(createDeathRecipient(), 0)
         onInterceptorSetup(service, backdoor)
 
@@ -152,12 +157,15 @@ object InterceptorUtils {
         return BinderInterceptor.OverrideReply(0, p)
     }
 
-    fun String.extractAlias(): String {
-        return when {
-            contains("_") -> split("_")[1]
-            else -> this
-        }
-    }
+    fun String.extractAlias(): String =
+        sequenceOf(
+            Credentials.USER_PRIVATE_KEY,
+            Credentials.USER_SECRET_KEY,
+            Credentials.USER_CERTIFICATE,
+            Credentials.CA_CERTIFICATE,
+        ).firstNotNullOfOrNull { prefix ->
+            if (startsWith(prefix) && length > prefix.length) substring(prefix.length) else null
+        } ?: this
 
     fun Parcel.hasException(): Boolean {
         return runCatching { readException() }.exceptionOrNull() != null
