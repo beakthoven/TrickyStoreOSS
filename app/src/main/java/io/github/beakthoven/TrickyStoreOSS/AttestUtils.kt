@@ -43,7 +43,8 @@ object AttestUtils {
     private const val AAID_PROVIDER = "sec_key_att_app_id_provider"
     private const val AAID_PROVIDER_TIMEOUT_MS = 120_000L
 
-    // Android 12/13 and affected early Android 14 branches can dereference an absent AAID provider.
+    // keystore2 gets the attestation application id from system_server. Up to Android 13 it gives up
+    // after 5 s and then dereferences the null binder, so an attested keygen this early kills it.
     private fun waitForAaidProvider(): Boolean {
         val deadline = SystemClock.elapsedRealtime() + AAID_PROVIDER_TIMEOUT_MS
         while (ServiceManager.checkService(AAID_PROVIDER) == null) {
