@@ -16,7 +16,6 @@ import android.security.keymaster.KeymasterDefs
 import android.system.keystore2.IKeystoreOperation
 import android.system.keystore2.ResponseCode
 import io.github.beakthoven.TrickyStoreOSS.CertificateGen.KeyGenParameters
-import io.github.beakthoven.TrickyStoreOSS.CertificateUtils
 import java.security.Key
 import java.security.KeyFactory
 import java.security.MessageDigest
@@ -37,38 +36,112 @@ private const val MAX_RECEIVE_DATA = 0x8000
 internal class OpRequest(
     val purpose: Int = -1,
     val digest: Int = 0,
+    val digestSpecified: Boolean = false,
     val padding: Int = 0,
     val blockMode: Int = 0,
     val nonce: ByteArray? = null,
     val macLength: Int? = null,
     val mgfDigest: Int = 0,
+    val mgfDigestSpecified: Boolean = false,
 ) {
     companion object {
         fun parse(params: Array<KeyParameter>): OpRequest {
             var purpose = -1
             var digest = 0
+            var digestSpecified = false
             var padding = 0
             var blockMode = 0
             var nonce: ByteArray? = null
             var macLength: Int? = null
             var mgfDigest = 0
+            var mgfDigestSpecified = false
             for (p in params) {
                 try {
                     val v = p.value
                     when (p.tag) {
                         Tag.PURPOSE -> purpose = v.keyPurpose
-                        Tag.DIGEST -> digest = v.digest
+                        Tag.DIGEST -> {
+                            digest = v.digest
+                            digestSpecified = true
+                        }
                         Tag.PADDING -> padding = v.paddingMode
                         Tag.BLOCK_MODE -> blockMode = v.blockMode
                         Tag.NONCE -> nonce = v.blob
                         Tag.MAC_LENGTH -> macLength = v.integer
-                        Tag.RSA_OAEP_MGF_DIGEST -> mgfDigest = v.digest
+                        Tag.RSA_OAEP_MGF_DIGEST -> {
+                            mgfDigest = v.digest
+                            mgfDigestSpecified = true
+                        }
                     }
                 } catch (_: Exception) {}
             }
-            return OpRequest(purpose, digest, padding, blockMode, nonce, macLength, mgfDigest)
+            return OpRequest(purpose, digest, digestSpecified, padding, blockMode, nonce, macLength, mgfDigest, mgfDigestSpecified)
         }
     }
+}
+
+private fun digestNameOrNull(digest: Int): String? =
+    when (digest) {
+        KeymasterDefs.KM_DIGEST_NONE -> "NONE"
+        KeymasterDefs.KM_DIGEST_SHA1 -> "SHA1"
+        KeymasterDefs.KM_DIGEST_SHA_2_224 -> "SHA224"
+        KeymasterDefs.KM_DIGEST_SHA_2_256 -> "SHA256"
+        KeymasterDefs.KM_DIGEST_SHA_2_384 -> "SHA384"
+        KeymasterDefs.KM_DIGEST_SHA_2_512 -> "SHA512"
+        else -> null
+    }
+
+private fun mgf1ParameterSpecOrNull(digest: Int): MGF1ParameterSpec? =
+    when (digest) {
+        KeymasterDefs.KM_DIGEST_SHA1 -> MGF1ParameterSpec.SHA1
+        KeymasterDefs.KM_DIGEST_SHA_2_224 -> MGF1ParameterSpec.SHA224
+        KeymasterDefs.KM_DIGEST_SHA_2_256 -> MGF1ParameterSpec.SHA256
+        KeymasterDefs.KM_DIGEST_SHA_2_384 -> MGF1ParameterSpec.SHA384
+        KeymasterDefs.KM_DIGEST_SHA_2_512 -> MGF1ParameterSpec.SHA512
+        else -> null
+    }
+
+private data class EffectiveOperationParameters(
+    val padding: Int,
+    val digest: Int,
+    val mgfDigest: Int,
+    val digestError: Int? = null,
+    val mgfDigestError: Int? = null,
+)
+
+private fun effectiveOperationParameters(
+    keyParams: KeyGenParameters,
+    op: OpRequest,
+    purpose: Int = op.purpose,
+): EffectiveOperationParameters {
+    val padding = op.padding.takeIf { it != 0 } ?: keyParams.padding.firstOrNull() ?: KeymasterDefs.KM_PAD_NONE
+    val digest =
+        if (op.digestSpecified) op.digest
+        else if (keyParams.algorithm == Algorithm.RSA && padding == KeymasterDefs.KM_PAD_RSA_OAEP)
+            KeymasterDefs.KM_DIGEST_SHA1
+        else keyParams.digest.firstOrNull() ?: KeymasterDefs.KM_DIGEST_NONE
+    val mgfDigest = if (op.mgfDigestSpecified) op.mgfDigest else KeymasterDefs.KM_DIGEST_SHA1
+    val usesDigest = purpose == KeyPurpose.SIGN || (keyParams.algorithm == Algorithm.RSA && padding == KeymasterDefs.KM_PAD_RSA_OAEP)
+    val digestError =
+        if (
+            usesDigest && (digestNameOrNull(digest) == null || digest == KeymasterDefs.KM_DIGEST_NONE) &&
+                !(keyParams.algorithm == Algorithm.RSA && purpose == KeyPurpose.SIGN &&
+                    padding != KeymasterDefs.KM_PAD_RSA_PSS && digest == KeymasterDefs.KM_DIGEST_NONE)
+        ) KeymasterDefs.KM_ERROR_UNSUPPORTED_DIGEST
+        else if (
+            keyParams.algorithm == Algorithm.RSA && padding == KeymasterDefs.KM_PAD_RSA_PSS &&
+                digest == KeymasterDefs.KM_DIGEST_NONE
+        ) KeymasterDefs.KM_ERROR_UNSUPPORTED_DIGEST
+        else if (usesDigest && keyParams.digest.isNotEmpty() && digest !in keyParams.digest)
+            KeymasterDefs.KM_ERROR_UNSUPPORTED_DIGEST
+        else null
+    val mgfDigestError =
+        if (keyParams.algorithm != Algorithm.RSA || padding != KeymasterDefs.KM_PAD_RSA_OAEP) null
+        else if (mgf1ParameterSpecOrNull(mgfDigest) == null) KeymasterDefs.KM_ERROR_UNSUPPORTED_MGF_DIGEST
+        else if (keyParams.mgfDigest.isNotEmpty() && mgfDigest !in keyParams.mgfDigest)
+            KeymasterDefs.KM_ERROR_UNSUPPORTED_MGF_DIGEST
+        else null
+    return EffectiveOperationParameters(padding, digest, mgfDigest, digestError, mgfDigestError)
 }
 
 internal fun authorizeOperation(keyParams: KeyGenParameters, op: OpRequest): Int? {
@@ -92,15 +165,13 @@ internal fun authorizeOperation(keyParams: KeyGenParameters, op: OpRequest): Int
             keyParams.callerNonce != true
     )
         return KeymasterDefs.KM_ERROR_CALLER_NONCE_PROHIBITED
-    if (keyParams.digest.isNotEmpty() && op.digest !in keyParams.digest)
-        return KeymasterDefs.KM_ERROR_UNSUPPORTED_DIGEST
-    if (keyParams.padding.isNotEmpty() && op.padding !in keyParams.padding)
+    val effective = effectiveOperationParameters(keyParams, op, purpose)
+    if (keyParams.padding.isNotEmpty() && effective.padding !in keyParams.padding)
         return KeymasterDefs.KM_ERROR_UNSUPPORTED_PADDING_MODE
     if (keyParams.blockMode.isNotEmpty() && op.blockMode !in keyParams.blockMode)
         return KeymasterDefs.KM_ERROR_UNSUPPORTED_BLOCK_MODE
-    val effectiveMgfDigest = if (op.mgfDigest != 0) op.mgfDigest else KeymasterDefs.KM_DIGEST_SHA1
-    if (keyParams.mgfDigest.isNotEmpty() && effectiveMgfDigest !in keyParams.mgfDigest)
-        return KeymasterDefs.KM_ERROR_UNSUPPORTED_MGF_DIGEST
+    effective.digestError?.let { return it }
+    effective.mgfDigestError?.let { return it }
     return null
 }
 
@@ -192,7 +263,7 @@ internal class SoftwareOperationBinder
 private constructor(
     private val engine: OpEngine,
     private val usageKey: SecurityLevelInterceptor.Key?,
-    private val usageCountLimit: Int,
+    private val keyParams: KeyGenParameters,
 ) : IKeystoreOperation.Stub() {
     @Volatile private var active = true
 
@@ -225,9 +296,10 @@ private constructor(
         synchronized(this) {
             checkActive()
             checkInput(input)
-            consumeUsage()
             try {
-                engine.finish(input, signature)
+                val result = engine.finish(input, signature)
+                consumeUsage()
+                result
             } catch (e: ServiceSpecificException) {
                 throw e
             } catch (e: AEADBadTagException) {
@@ -261,16 +333,8 @@ private constructor(
     }
 
     private fun consumeUsage() {
-        if (usageCountLimit <= 0 || usageKey == null) return
-        var deny = false
-        SecurityLevelInterceptor.usageRemaining.compute(usageKey) { _, v ->
-            val cur = v ?: usageCountLimit
-            if (cur <= 0) {
-                deny = true
-                cur
-            } else cur - 1
-        }
-        if (deny) throw ServiceSpecificException(KeymasterDefs.KM_ERROR_KEY_EXPIRED, "Key usage limit expired")
+        if (usageKey == null || (keyParams.usageCountLimit <= 0 && keyParams.maxUsesPerBoot <= 0)) return
+        SecurityLevelInterceptor.consumeUsage(usageKey, keyParams)
     }
 
     companion object {
@@ -287,20 +351,25 @@ private constructor(
                         KeymasterDefs.KM_ERROR_INVALID_ARGUMENT,
                         "No key purpose specified",
                     )
-            val digest =
-                op.digest.takeIf { it != 0 } ?: p.digest.firstOrNull { it != 0 } ?: KeymasterDefs.KM_DIGEST_SHA_2_256
-            val padding = op.padding.takeIf { it != 0 } ?: p.padding.firstOrNull()
+            val effective = effectiveOperationParameters(p, op, purpose)
+            effective.digestError?.let { throw ServiceSpecificException(it, "Unsupported operation digest") }
+            effective.mgfDigestError?.let { throw ServiceSpecificException(it, "Unsupported MGF digest") }
+            val digest = effective.digest
+            val padding = effective.padding
             val blockMode = op.blockMode.takeIf { it != 0 } ?: p.blockMode.firstOrNull()
             val engine: OpEngine =
-                when (p.algorithm) {
+                try {
+                    when (p.algorithm) {
                     Algorithm.HMAC -> {
                         if (purpose != KeymasterDefs.KM_PURPOSE_SIGN && purpose != KeymasterDefs.KM_PURPOSE_VERIFY)
                             throw ServiceSpecificException(
                                 KeymasterDefs.KM_ERROR_UNSUPPORTED_PURPOSE,
                                 "Unsupported purpose for HMAC: $purpose",
                             )
+                        if (digest == KeymasterDefs.KM_DIGEST_NONE)
+                            throw ServiceSpecificException(KeymasterDefs.KM_ERROR_UNSUPPORTED_DIGEST, "HMAC requires a digest")
                         MacEngine(
-                            Mac.getInstance("Hmac${CertificateUtils.digestName(digest, false)}").apply {
+                            Mac.getInstance("Hmac${operationDigestName(digest)}").apply {
                                 init(
                                     info.secretKey
                                         ?: throw ServiceSpecificException(
@@ -335,7 +404,7 @@ private constructor(
                                 )
                             KeyPurpose.ENCRYPT,
                             KeyPurpose.DECRYPT ->
-                                CipherEngine(buildCipher(p, op, digest, padding, blockMode, info, purpose))
+                                CipherEngine(buildCipher(p, op, digest, effective.mgfDigest, padding, blockMode, info, purpose))
                             else ->
                                 throw ServiceSpecificException(
                                     KeymasterDefs.KM_ERROR_UNSUPPORTED_PURPOSE,
@@ -346,7 +415,7 @@ private constructor(
                         when (purpose) {
                             KeyPurpose.ENCRYPT,
                             KeyPurpose.DECRYPT ->
-                                CipherEngine(buildCipher(p, op, digest, padding, blockMode, info, purpose))
+                                CipherEngine(buildCipher(p, op, digest, effective.mgfDigest, padding, blockMode, info, purpose))
                             else ->
                                 throw ServiceSpecificException(
                                     KeymasterDefs.KM_ERROR_UNSUPPORTED_PURPOSE,
@@ -358,19 +427,21 @@ private constructor(
                             KeymasterDefs.KM_ERROR_UNSUPPORTED_PURPOSE,
                             "Unsupported algorithm: ${p.algorithm}",
                         )
+                    }
+                } catch (e: ServiceSpecificException) {
+                    throw e
+                } catch (e: Throwable) {
+                    throw ServiceSpecificException(
+                        KeymasterDefs.KM_ERROR_UNSUPPORTED_ALGORITHM,
+                        e.message ?: "Software operation setup failed",
+                    )
                 }
-            return SoftwareOperationBinder(engine, usageKey, p.usageCountLimit)
+            return SoftwareOperationBinder(engine, usageKey, p)
         }
 
-        private fun mgf1ParameterSpec(digest: Int) =
-            when (digest) {
-                KeymasterDefs.KM_DIGEST_SHA1 -> MGF1ParameterSpec.SHA1
-                KeymasterDefs.KM_DIGEST_SHA_2_224 -> MGF1ParameterSpec.SHA224
-                KeymasterDefs.KM_DIGEST_SHA_2_256 -> MGF1ParameterSpec.SHA256
-                KeymasterDefs.KM_DIGEST_SHA_2_384 -> MGF1ParameterSpec.SHA384
-                KeymasterDefs.KM_DIGEST_SHA_2_512 -> MGF1ParameterSpec.SHA512
-                else -> MGF1ParameterSpec.SHA1
-            }
+        private fun operationDigestName(digest: Int): String =
+            digestNameOrNull(digest)
+                ?: throw ServiceSpecificException(KeymasterDefs.KM_ERROR_UNSUPPORTED_DIGEST, "Unsupported digest: $digest")
 
         private fun signatureAlgorithm(algorithm: Int, digest: Int, padding: Int?): String {
             val keyAlgo =
@@ -383,9 +454,9 @@ private constructor(
                             "Unsupported signature algorithm",
                         )
                 }
-            val name = "${CertificateUtils.digestName(digest, false)}with$keyAlgo"
+            val name = "${operationDigestName(digest)}with$keyAlgo"
             return if (algorithm == Algorithm.RSA && padding == KeymasterDefs.KM_PAD_RSA_PSS)
-                "${CertificateUtils.digestName(digest, false)}withRSA/PSS"
+                "${operationDigestName(digest)}withRSA/PSS"
             else name
         }
 
@@ -393,6 +464,7 @@ private constructor(
             p: KeyGenParameters,
             op: OpRequest,
             digest: Int,
+            mgfDigest: Int,
             padding: Int?,
             blockMode: Int?,
             info: SecurityLevelInterceptor.Info,
@@ -433,9 +505,13 @@ private constructor(
                             GCMParameterSpec(op.macLength ?: 128, op.nonce ?: ByteArray(12))
                         padding == KeymasterDefs.KM_PAD_RSA_OAEP ->
                             OAEPParameterSpec(
-                                CertificateUtils.digestName(digest, true),
+                                operationDigestName(digest).replace("SHA", "SHA-"),
                                 "MGF1",
-                                mgf1ParameterSpec(op.mgfDigest),
+                                mgf1ParameterSpecOrNull(mgfDigest)
+                                    ?: throw ServiceSpecificException(
+                                        KeymasterDefs.KM_ERROR_UNSUPPORTED_MGF_DIGEST,
+                                        "Unsupported MGF digest: $mgfDigest",
+                                    ),
                                 PSource.PSpecified.DEFAULT,
                             )
                         op.nonce != null -> IvParameterSpec(op.nonce)

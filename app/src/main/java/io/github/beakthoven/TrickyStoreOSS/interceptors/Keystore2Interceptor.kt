@@ -9,14 +9,13 @@ import android.annotation.SuppressLint
 import android.hardware.security.keymint.SecurityLevel
 import android.os.IBinder
 import android.os.Parcel
+import android.system.keystore2.Domain
 import android.system.keystore2.IKeystoreService
 import android.system.keystore2.KeyDescriptor
 import android.system.keystore2.KeyEntryResponse
-import android.system.keystore2.KeyPermission
 import android.system.keystore2.ResponseCode
 import io.github.beakthoven.TrickyStoreOSS.CertificateHack
 import io.github.beakthoven.TrickyStoreOSS.CertificateUtils
-import io.github.beakthoven.TrickyStoreOSS.KeyBoxUtils
 import io.github.beakthoven.TrickyStoreOSS.config.PkgConfig
 import io.github.beakthoven.TrickyStoreOSS.interceptors.InterceptorUtils.createTypedObjectReply
 import io.github.beakthoven.TrickyStoreOSS.interceptors.InterceptorUtils.errorReply
@@ -43,12 +42,7 @@ object Keystore2Interceptor : BaseKeystoreInterceptor() {
     private val listEntriesBatchedTransaction = transactCode("listEntriesBatched")
     private val grantTransaction = transactCode("grant")
     private val ungrantTransaction = transactCode("ungrant")
-    private val domainGrant: Int =
-        try {
-            Class.forName("android.system.keystore2.Domain").getField("GRANT").getInt(null)
-        } catch (e: Exception) {
-            1
-        }
+    private val domainGrant: Int = Domain.GRANT
 
     override val interceptedCodes: IntArray by lazy {
         val codes =
@@ -70,17 +64,19 @@ object Keystore2Interceptor : BaseKeystoreInterceptor() {
     override val injectionCommand = "exec ./inject `pidof keystore2` libTrickyStoreOSS.so entry"
 
     override fun onInterceptorSetup(service: IBinder, backdoor: IBinder) {
-        setupSecurityLevelInterceptors(service, backdoor)
+        check(setupSecurityLevelInterceptors(service, backdoor)) { "Failed to register keystore2 security-level interceptor" }
     }
 
-    private fun setupSecurityLevelInterceptors(service: IBinder, backdoor: IBinder) {
+    private fun setupSecurityLevelInterceptors(service: IBinder, backdoor: IBinder): Boolean {
+        var registered = false
         val ks = IKeystoreService.Stub.asInterface(service)
 
         val tee = runCatching { ks.getSecurityLevel(SecurityLevel.TRUSTED_ENVIRONMENT) }.getOrNull()
         if (tee != null) {
             Logger.i("Registering for TEE SecurityLevel: $tee")
             val interceptor = SecurityLevelInterceptor(tee, SecurityLevel.TRUSTED_ENVIRONMENT)
-            registerBinderInterceptor(backdoor, tee.asBinder(), interceptor)
+            check(registerBinderInterceptor(backdoor, tee.asBinder(), interceptor)) { "TEE interceptor registration failed" }
+            registered = true
             interceptor.loadPersistedKeys()
         } else {
             Logger.i("No TEE SecurityLevel found")
@@ -90,11 +86,14 @@ object Keystore2Interceptor : BaseKeystoreInterceptor() {
         if (strongBox != null) {
             Logger.i("Registering for StrongBox SecurityLevel: $strongBox")
             val interceptor = SecurityLevelInterceptor(strongBox, SecurityLevel.STRONGBOX)
-            registerBinderInterceptor(backdoor, strongBox.asBinder(), interceptor)
+            check(registerBinderInterceptor(backdoor, strongBox.asBinder(), interceptor)) { "StrongBox interceptor registration failed" }
+            registered = true
             interceptor.loadPersistedKeys()
         } else {
             Logger.i("No StrongBox SecurityLevel found")
         }
+        check(registered) { "No keystore2 security level was registered" }
+        return true
     }
 
     override fun onPreTransact(
@@ -114,15 +113,21 @@ object Keystore2Interceptor : BaseKeystoreInterceptor() {
                     "deleteKey pre-hook: uid=$callingUid alias=${keyDescriptor?.alias} domain=${keyDescriptor?.domain}"
                 )
                 if (keyDescriptor != null) {
-                    val alias = keyDescriptor.alias
-                    if (alias != null) {
-                        val key = SecurityLevelInterceptor.Key(callingUid, alias)
-                        val isSoftware =
-                            SecurityLevelInterceptor.keys.containsKey(key) &&
-                                !SecurityLevelInterceptor.skipLeafHacks.containsKey(key)
-                        SecurityLevelInterceptor.cleanupKey(callingUid, alias)
-                        Logger.d("deleteKey pre-hook: cleaned up uid=$callingUid alias=$alias")
-                        if (isSoftware) return@runCatching successReply()
+                    val resolved = SecurityLevelInterceptor.resolveAuthorizedKey(
+                        callingUid,
+                        keyDescriptor,
+                        SecurityLevelInterceptor.Companion.AccessAction.DELETE,
+                    )
+                    if (resolved != null && !resolved.allowed) {
+                        return@runCatching errorReply(ResponseCode.PERMISSION_DENIED, "DELETE permission not granted")
+                    }
+                    val key = resolved?.key
+                    if (resolved?.allowed == true && key != null && SecurityLevelInterceptor.keys.containsKey(key)) {
+                        if (!SecurityLevelInterceptor.cleanupKey(key.uid, key.alias)) {
+                            return@runCatching errorReply(ResponseCode.SYSTEM_ERROR, "Unable to durably delete key")
+                        }
+                        Logger.d("deleteKey pre-hook: cleaned up uid=${key.uid} alias=${key.alias}")
+                        return@runCatching successReply()
                     }
                 }
                 null
@@ -139,22 +144,21 @@ object Keystore2Interceptor : BaseKeystoreInterceptor() {
                 val keyDescriptor = data.readTypedObject(KeyDescriptor.CREATOR) ?: return@runCatching null
                 val publicCert = data.createByteArray()
                 val certificateChain = data.createByteArray()
-                var key = SecurityLevelInterceptor.resolveKey(callingUid, keyDescriptor)
-                if (key == null && keyDescriptor.nspace != 0L) {
-                    val grant = SecurityLevelInterceptor.grants[keyDescriptor.nspace]
-                    if (grant != null && grant.granteeUid == callingUid) {
-                        if (grant.accessVector and KeyPermission.UPDATE == 0)
-                            return@runCatching errorReply(
-                                ResponseCode.PERMISSION_DENIED,
-                                "UPDATE permission not granted",
-                            )
-                        if (SecurityLevelInterceptor.isPatchedKey(grant.key)) key = grant.key
-                    }
+                val resolved = SecurityLevelInterceptor.resolveAuthorizedKey(
+                    callingUid,
+                    keyDescriptor,
+                    SecurityLevelInterceptor.Companion.AccessAction.UPDATE,
+                )
+                if (resolved != null && !resolved.allowed) {
+                    return@runCatching errorReply(ResponseCode.PERMISSION_DENIED, "UPDATE permission not granted")
                 }
+                val key = resolved?.key
                 if (key != null && SecurityLevelInterceptor.keys.containsKey(key)) {
                     // forged keys only exist in our maps, so the real keystore can't take the
                     // update — swallow it and patch the cached cert chain instead
-                    SecurityLevelInterceptor.updateKeyCertChain(key, publicCert, certificateChain)
+                    if (!SecurityLevelInterceptor.updateKeyCertChain(key, publicCert, certificateChain)) {
+                        return@runCatching errorReply(ResponseCode.SYSTEM_ERROR, "Unable to persist certificate update")
+                    }
                     Logger.i("updateSubcomponent: swallowed for forged key uid=$callingUid alias=${key.alias}")
                     return@runCatching successReply()
                 }
@@ -174,38 +178,47 @@ object Keystore2Interceptor : BaseKeystoreInterceptor() {
             return Continue
         }
 
-        if (code == grantTransaction && grantTransaction >= 0 && KeyBoxUtils.hasKeyboxes()) {
+        if (code == grantTransaction && grantTransaction >= 0) {
             val raw = runCatching {
                 data.enforceInterface(IKeystoreService.DESCRIPTOR)
                 if (data.dataAvail() < MIN_KEY_DESCRIPTOR_BYTES) return@runCatching Skip
                 val keyDescriptor = data.readTypedObject(KeyDescriptor.CREATOR) ?: return@runCatching Skip
                 val granteeUid = data.readInt()
                 val accessVector = data.readInt() // KeyPermission bitmap (GET_INFO=4, USE=256, …)
-                val key = SecurityLevelInterceptor.resolveKey(callingUid, keyDescriptor)
+                val resolved = SecurityLevelInterceptor.resolveAuthorizedKey(
+                    callingUid,
+                    keyDescriptor,
+                    SecurityLevelInterceptor.Companion.AccessAction.GRANT,
+                )
+                if (resolved != null && !resolved.allowed) {
+                    return@runCatching errorReply(ResponseCode.PERMISSION_DENIED, "GRANT permission not granted")
+                }
+                val key = resolved?.key
                 if (key != null && SecurityLevelInterceptor.keys.containsKey(key)) {
-                    // forged keys don't exist in the real keystore so a real grant is impossible —
-                    // forge one instead. Re-grants to the same grantee reuse the existing grantId
-                    val existing =
-                        SecurityLevelInterceptor.grants.entries.firstOrNull { (_, g) ->
-                            g.key == key && g.granteeUid == granteeUid
-                        }
-                    val grantId =
-                        if (existing != null) {
-                            SecurityLevelInterceptor.grants[existing.key] =
-                                existing.value.copy(accessVector = accessVector)
-                            existing.key
-                        } else {
-                            val id = java.security.SecureRandom().nextLong()
-                            SecurityLevelInterceptor.grants[id] =
-                                SecurityLevelInterceptor.GrantInfo(callingUid, granteeUid, key, accessVector)
-                            id
-                        }
-                    val grantDescriptor = KeyDescriptor()
-                    grantDescriptor.domain = domainGrant
-                    grantDescriptor.nspace = grantId
-                    grantDescriptor.alias = null
-                    Logger.i("grant: forged grantId=$grantId alias=${key.alias} grantee=$granteeUid")
-                    return@runCatching typedReply(grantDescriptor)
+                    return@runCatching SecurityLevelInterceptor.withKeyLock(key) {
+                        if (!SecurityLevelInterceptor.keys.containsKey(key)) return@withKeyLock Skip
+                        val existing =
+                            SecurityLevelInterceptor.grants.entries.firstOrNull { (_, g) ->
+                                g.key == key && g.granteeUid == granteeUid
+                            }
+                        val grantId =
+                            if (existing != null) {
+                                SecurityLevelInterceptor.grants[existing.key] =
+                                    existing.value.copy(accessVector = accessVector)
+                                existing.key
+                            } else {
+                                val id = java.security.SecureRandom().nextLong()
+                                SecurityLevelInterceptor.grants[id] =
+                                    SecurityLevelInterceptor.GrantInfo(callingUid, granteeUid, key, accessVector)
+                                id
+                            }
+                        val grantDescriptor = KeyDescriptor()
+                        grantDescriptor.domain = domainGrant
+                        grantDescriptor.nspace = grantId
+                        grantDescriptor.alias = null
+                        Logger.i("grant: forged grantId=$grantId alias=${key.alias} grantee=$granteeUid")
+                        typedReply(grantDescriptor)
+                    }
                 }
                 if (key != null && SecurityLevelInterceptor.isPatchedKey(key)) {
                     // real keys: let the real keystore own the grant so grant-domain operations
@@ -224,7 +237,15 @@ object Keystore2Interceptor : BaseKeystoreInterceptor() {
                 if (data.dataAvail() < MIN_KEY_DESCRIPTOR_BYTES) return@runCatching Skip
                 val keyDescriptor = data.readTypedObject(KeyDescriptor.CREATOR) ?: return@runCatching Skip
                 val granteeUid = data.readInt()
-                val key = SecurityLevelInterceptor.resolveKey(callingUid, keyDescriptor)
+                val resolved = SecurityLevelInterceptor.resolveAuthorizedKey(
+                    callingUid,
+                    keyDescriptor,
+                    SecurityLevelInterceptor.Companion.AccessAction.GRANT,
+                )
+                if (resolved != null && !resolved.allowed) {
+                    return@runCatching errorReply(ResponseCode.PERMISSION_DENIED, "GRANT permission not granted")
+                }
+                val key = resolved?.key
                 if (key != null && SecurityLevelInterceptor.keys.containsKey(key)) {
                     val removed =
                         SecurityLevelInterceptor.grants.entries.removeIf { (_, g) ->
@@ -246,7 +267,7 @@ object Keystore2Interceptor : BaseKeystoreInterceptor() {
             return raw.onFailure { Logger.e("ungrant pre-hook failed", it) }.getOrNull() ?: Skip
         }
 
-        if (code == getKeyEntryTransaction && KeyBoxUtils.hasKeyboxes()) {
+        if (code == getKeyEntryTransaction) {
             val raw = runCatching {
                 Logger.d("intercept pre  $target uid=$callingUid pid=$callingPid dataSz=${data.dataSize()}")
                 data.enforceInterface(IKeystoreService.DESCRIPTOR)
@@ -256,27 +277,17 @@ object Keystore2Interceptor : BaseKeystoreInterceptor() {
                 }
                 val descriptor = data.readTypedObject(KeyDescriptor.CREATOR) ?: return@runCatching Skip
                 val aliasLabel = descriptor.alias ?: "<nspace=${descriptor.nspace}>"
-                if (descriptor.nspace != 0L) {
-                    val grant = SecurityLevelInterceptor.grants[descriptor.nspace]
-                    if (grant != null && grant.granteeUid == callingUid) {
-                        if (grant.accessVector and KeyPermission.GET_INFO == 0) {
-                            Logger.i(
-                                "Grant getKeyEntry denied: grantee uid=$callingUid lacks GET_INFO for grantId=${descriptor.nspace} accessVector=${grant.accessVector}"
-                            )
-                            return@runCatching errorReply(
-                                ResponseCode.PERMISSION_DENIED,
-                                "GET_INFO permission not granted",
-                            )
-                        }
-                        val response =
-                            SecurityLevelInterceptor.keys[grant.key]?.response
-                                ?: SecurityLevelInterceptor.patchedResponses[grant.key]
-                        if (response != null) {
-                            Logger.d("getKeyEntry: serving grant alias=${grant.key.alias} grantee=$callingUid")
-                            return@runCatching safeTypedObjectReply(response, "grant")
-                        }
-                        Logger.d("getKeyEntry: grant ${descriptor.nspace} has no cache, falling through")
-                    }
+                val authorized = SecurityLevelInterceptor.resolveAuthorizedKey(
+                    callingUid,
+                    descriptor,
+                    SecurityLevelInterceptor.Companion.AccessAction.GET_INFO,
+                )
+                if (authorized != null && !authorized.allowed) {
+                    return@runCatching errorReply(ResponseCode.PERMISSION_DENIED, "GET_INFO permission not granted")
+                }
+                if (authorized?.provenance == SecurityLevelInterceptor.Companion.DescriptorProvenance.GRANT) {
+                    val response = authorized.info?.response ?: SecurityLevelInterceptor.patchedResponses[authorized.key]
+                    if (response != null) return@runCatching safeTypedObjectReply(response, "grant")
                 }
                 when {
                     PkgConfig.needGenerate(callingUid) -> {
@@ -335,8 +346,8 @@ object Keystore2Interceptor : BaseKeystoreInterceptor() {
         if (
             listEntriesTransaction >= 0 &&
                 (code == listEntriesTransaction || code == listEntriesBatchedTransaction) &&
-                KeyBoxUtils.hasKeyboxes() &&
-                (PkgConfig.needGenerate(callingUid) || PkgConfig.needHack(callingUid))
+                (SecurityLevelInterceptor.keys.keys.any { it.uid == callingUid } ||
+                    PkgConfig.needGenerate(callingUid) || PkgConfig.needHack(callingUid))
         ) {
             return Continue
         }
@@ -403,41 +414,49 @@ object Keystore2Interceptor : BaseKeystoreInterceptor() {
         if (
             listEntriesTransaction >= 0 &&
                 (code == listEntriesTransaction || code == listEntriesBatchedTransaction) &&
-                KeyBoxUtils.hasKeyboxes() &&
-                (PkgConfig.needGenerate(callingUid) || PkgConfig.needHack(callingUid))
+                (SecurityLevelInterceptor.keys.keys.any { it.uid == callingUid } ||
+                    PkgConfig.needGenerate(callingUid) || PkgConfig.needHack(callingUid))
         ) {
             return mergeListEntries(callingUid, code, data, reply, resultCode)
         }
 
         if (code == deleteKeyTransaction && resultCode == 0) {
             val raw = runCatching {
+                if (reply.hasException()) return@runCatching true
                 data.enforceInterface(IKeystoreService.DESCRIPTOR)
                 val keyDescriptor = data.readTypedObject(KeyDescriptor.CREATOR)
                 if (keyDescriptor != null) {
-                    val alias = keyDescriptor.alias
-                    if (alias != null) {
-                        SecurityLevelInterceptor.cleanupKey(callingUid, alias)
-                    }
-                }
+                    val resolved = SecurityLevelInterceptor.resolveAuthorizedKey(
+                        callingUid,
+                        keyDescriptor,
+                        SecurityLevelInterceptor.Companion.AccessAction.DELETE,
+                    )
+                    if (resolved?.allowed == true) {
+                        SecurityLevelInterceptor.cleanupKey(resolved.key.uid, resolved.key.alias)
+                    } else true
+                } else true
             }
-            raw.onFailure { Logger.e("deleteKey cleanup failed", it) }
+            val cleaned = raw.onFailure { Logger.e("deleteKey cleanup failed", it) }.getOrNull()
+            if (cleaned == false) return errorReply(ResponseCode.SYSTEM_ERROR, "Unable to durably delete key")
             return Skip
         }
 
         if (code == updateSubcomponentTransaction && resultCode == 0) {
             val raw = runCatching {
+                if (reply.hasException()) return@runCatching
                 data.enforceInterface(IKeystoreService.DESCRIPTOR)
                 val keyDescriptor = data.readTypedObject(KeyDescriptor.CREATOR)
                 if (keyDescriptor != null) {
-                    val alias =
-                        keyDescriptor.alias
-                            ?: SecurityLevelInterceptor.findAliasForNspace(callingUid, keyDescriptor.nspace)
-                    if (alias != null) {
-                        val k = SecurityLevelInterceptor.Key(callingUid, alias)
-                        SecurityLevelInterceptor.patchedResponses.remove(k)
-                        SecurityLevelInterceptor.skipLeafHacks.remove(k)
+                    val resolved = SecurityLevelInterceptor.resolveAuthorizedKey(
+                        callingUid,
+                        keyDescriptor,
+                        SecurityLevelInterceptor.Companion.AccessAction.UPDATE,
+                    )
+                    if (resolved?.allowed == true) {
+                        SecurityLevelInterceptor.patchedResponses.remove(resolved.key)
+                        SecurityLevelInterceptor.skipLeafHacks.remove(resolved.key)
                         Logger.i(
-                            "Invalidated cached response for uid=$callingUid alias=$alias after updateSubcomponent"
+                            "Invalidated cached response for uid=$callingUid alias=${resolved.key.alias} after updateSubcomponent"
                         )
                     }
                 }
@@ -446,7 +465,7 @@ object Keystore2Interceptor : BaseKeystoreInterceptor() {
             return Skip
         }
 
-        if (code == grantTransaction && resultCode == 0 && KeyBoxUtils.hasKeyboxes()) {
+        if (code == grantTransaction && resultCode == 0) {
             val raw = runCatching {
                 if (reply.hasException()) return@runCatching
                 data.enforceInterface(IKeystoreService.DESCRIPTOR)
@@ -454,7 +473,14 @@ object Keystore2Interceptor : BaseKeystoreInterceptor() {
                 val granteeUid = data.readInt()
                 val accessVector = data.readInt()
                 val grantDescriptor = reply.readTypedObject(KeyDescriptor.CREATOR) ?: return@runCatching
-                val key = SecurityLevelInterceptor.resolveKey(callingUid, keyDescriptor) ?: return@runCatching
+                val key =
+                    SecurityLevelInterceptor.resolveAuthorizedKey(
+                        callingUid,
+                        keyDescriptor,
+                        SecurityLevelInterceptor.Companion.AccessAction.GRANT,
+                    )?.takeIf { it.allowed }
+                        ?.key
+                        ?: return@runCatching
                 if (!SecurityLevelInterceptor.isPatchedKey(key)) return@runCatching
                 SecurityLevelInterceptor.grants[grantDescriptor.nspace] =
                     SecurityLevelInterceptor.GrantInfo(callingUid, granteeUid, key, accessVector)
@@ -472,22 +498,23 @@ object Keystore2Interceptor : BaseKeystoreInterceptor() {
         if (code == getKeyEntryTransaction) {
             try {
                 data.enforceInterface("android.system.keystore2.IKeystoreService")
+                val descriptor = data.readTypedObject(KeyDescriptor.CREATOR) ?: return Skip
+                val authorized = SecurityLevelInterceptor.resolveAuthorizedKey(
+                    callingUid, descriptor, SecurityLevelInterceptor.Companion.AccessAction.GET_INFO,
+                )
+                if (authorized != null && !authorized.allowed) return Skip
                 val response = reply.readTypedObject(KeyEntryResponse.CREATOR)
                 if (response != null) {
-                    val cachedKey =
-                        response.metadata
-                            ?.key
-                            ?.nspace
-                            ?.takeIf { it != 0L }
-                            ?.let { SecurityLevelInterceptor.keysByNspace[it] }
+                    val cachedKey = authorized?.key
+                    val presentationUid = cachedKey?.uid ?: callingUid
                     val cached = cachedKey?.let { SecurityLevelInterceptor.patchedResponses[it] }
                     if (cached != null) return createTypedObjectReply(cached)
                     val chain = CertificateUtils.run { response.getCertificateChain() }
                     if (chain != null) {
-                        val newChain = CertificateHack.hackCertificateChain(chain, callingUid)
+                        val newChain = CertificateHack.hackCertificateChain(chain, presentationUid)
                         response.putCertificateChain(newChain).getOrThrow()
                         response.metadata?.authorizations =
-                            CertificateHack.patchAuthorizations(response.metadata?.authorizations, callingUid)
+                            CertificateHack.patchAuthorizations(response.metadata?.authorizations, presentationUid)
                         if (cachedKey != null) SecurityLevelInterceptor.patchedResponses[cachedKey] = response
                         Logger.d("Hacked certificate for uid=$callingUid")
                         return createTypedObjectReply(response)
