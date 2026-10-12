@@ -1,6 +1,6 @@
 [versions]
 agp = "9.4.1"
-annotation = "1.10.0"
+annotation = "1.11.0"
 jdk18on = "1.86"
 libcxx = "29.0.14206865"
 
