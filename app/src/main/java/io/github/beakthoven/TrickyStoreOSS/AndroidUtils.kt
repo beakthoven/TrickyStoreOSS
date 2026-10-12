@@ -5,6 +5,8 @@
 
 package io.github.beakthoven.TrickyStoreOSS
 
+import android.content.pm.IPackageManager
+import android.content.pm.PackageManager
 import android.hardware.security.keymint.SecurityLevel
 import android.os.Build
 import android.os.SystemProperties
@@ -13,10 +15,13 @@ import android.security.keystore.KeyStoreManager
 import io.github.beakthoven.TrickyStoreOSS.AttestUtils.CachedAttestData
 import io.github.beakthoven.TrickyStoreOSS.config.PkgConfig
 import io.github.beakthoven.TrickyStoreOSS.logging.Logger
+import java.io.ByteArrayOutputStream
 import java.io.File
+import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 import java.security.SecureRandom
 import java.time.LocalDate
+import java.time.YearMonth
 import java.util.concurrent.ConcurrentHashMap
 
 object AndroidUtils {
@@ -24,12 +29,12 @@ object AndroidUtils {
     const val DO_NOT_REPORT = -1
 
     val bootKey: ByteArray by lazy {
-        getBootKeyFromProp()?.also { Logger.d("Using boot key from ro.boot.vbmeta.public_key_digest: ${it.toHex()}") }
+        getBootKeyFromProp()?.also { Logger.d("Using boot key from ro.boot.vbmeta.public_key_digest") }
             ?: CachedAttestData?.verifiedBootKey?.takeIfNonZero()?.also {
-                Logger.d("Using boot key from cached TEE attestation: ${it.toHex()}")
+                Logger.d("Using boot key from cached TEE attestation")
             }
             ?: persistedBootKey().also {
-                Logger.d("Using persisted random boot key (no AVB key available): ${it.toHex()}")
+                Logger.d("Using persisted random boot key (no AVB key available)")
             }
     }
 
@@ -62,13 +67,13 @@ object AndroidUtils {
     }
 
     fun setupBootHash() {
-        getBootHashFromProp()?.also { Logger.d("Using boot hash from system property: ${it.toHex()}") }
+        getBootHashFromProp()?.also { Logger.d("Using boot hash from system property") }
             ?: getBootHashFromAttestation()?.also {
-                Logger.d("Using boot hash from attestation: ${it.toHex()}")
+                Logger.d("Using boot hash from attestation")
                 setBootHashProp(it)
             }
             ?: randomBytes().also {
-                Logger.d("Generating random boot hash: ${it.toHex()}")
+                Logger.d("Generating random boot hash")
                 setBootHashProp(it)
             }
     }
@@ -76,14 +81,14 @@ object AndroidUtils {
     @OptIn(ExperimentalStdlibApi::class)
     fun getBootHashFromProp(): ByteArray? {
         val digest = SystemProperties.get("ro.boot.vbmeta.digest", null) ?: return null
-        Logger.d("System property ro.boot.vbmeta.digest: $digest")
+        Logger.d("Read ro.boot.vbmeta.digest")
 
         if (digest.isBlank()) {
             Logger.d("Property is blank")
             return null
         }
 
-        return if (digest.length == 64) digest.hexToByteArray() else null
+        return if (digest.length == 64) runCatching { digest.hexToByteArray() }.getOrNull() else null
     }
 
     private fun getBootHashFromAttestation(): ByteArray? {
@@ -98,7 +103,7 @@ object AndroidUtils {
     private fun setBootHashProp(bytes: ByteArray) {
         val hex = bytes.toHex()
         try {
-            Logger.d("Setting ro.boot.vbmeta.digest to: $hex")
+            Logger.d("Setting ro.boot.vbmeta.digest")
             SystemProperties.set("ro.boot.vbmeta.digest", hex)
         } catch (e: Exception) {
             Logger.e("Exception setting vbmeta digest: ${e.message}")
@@ -151,7 +156,7 @@ object AndroidUtils {
             value.equals("device_default", ignoreCase = true) -> return null
         }
 
-        return parsePatchLevelValue(resolveDateValue(value), component, isLong)
+        return parsePatchLevelValue(resolveDateValue(value), component, isLong) ?: DO_NOT_REPORT
     }
 
     // ponytail: resolves per-attestation, so date templates stay current without a reload
@@ -167,30 +172,17 @@ object AndroidUtils {
     }
 
     private fun parsePatchLevelValue(value: String, component: String, isLong: Boolean): Int? {
-        val normalized = value.replace("-", "")
-
-        return try {
-            when (normalized.length) {
-                8 -> {
-                    val year = normalized.substring(0, 4).toInt()
-                    val month = normalized.substring(4, 6).toInt()
-                    val day = normalized.substring(6, 8).toInt()
-                    if (isLong) year * 10000 + month * 100 + day else year * 100 + month
-                }
-                6 -> {
-                    val year = normalized.substring(0, 4).toInt()
-                    val month = normalized.substring(4, 6).toInt()
-                    if (isLong) year * 10000 + month * 100 else year * 100 + month
-                }
-                else -> {
-                    Logger.e("Invalid patch level length for $component: $normalized")
-                    null
-                }
-            }
-        } catch (e: NumberFormatException) {
-            Logger.e("Patch level parse error for $component=$value", e)
-            null
-        }
+        return runCatching {
+            val normalized = value.replace("-", "")
+            require(value.matches(Regex("\\d{6}|\\d{8}|\\d{4}-\\d{2}|\\d{4}-\\d{2}-\\d{2}")))
+            val year = normalized.substring(0, 4).toInt()
+            val month = normalized.substring(4, 6).toInt()
+            val yearMonth = YearMonth.of(year, month)
+            val date = if (normalized.length == 8) LocalDate.of(year, month, normalized.substring(6, 8).toInt()) else null
+            if (isLong && date != null) date.year * 10000 + date.monthValue * 100 + date.dayOfMonth
+            else if (isLong) yearMonth.year * 10000 + yearMonth.monthValue * 100
+            else yearMonth.year * 100 + yearMonth.monthValue
+        }.onFailure { Logger.e("Invalid patch level for $component", it) }.getOrNull()
     }
 
     private val osVersionMap =
@@ -261,19 +253,79 @@ object AndroidUtils {
     fun String.convertPatchLevel(isLong: Boolean): Int {
         val raw = runCatching {
             val parts = split("-")
-            when {
-                isLong && parts.size >= 3 -> parts[0].toInt() * 10000 + parts[1].toInt() * 100 + parts[2].toInt()
-                parts.size >= 2 -> parts[0].toInt() * 100 + parts[1].toInt()
-                else -> throw IllegalArgumentException("Invalid patch level format: $this")
+            require(parts.size in 2..3 && parts.all { it.all(Char::isDigit) })
+            val yearMonth = YearMonth.of(parts[0].toInt(), parts[1].toInt())
+            if (isLong && parts.size == 3) {
+                val date = LocalDate.of(yearMonth.year, yearMonth.monthValue, parts[2].toInt())
+                date.year * 10000 + date.monthValue * 100 + date.dayOfMonth
+            } else if (isLong) {
+                yearMonth.year * 10000 + yearMonth.monthValue * 100
+            } else {
+                yearMonth.year * 100 + yearMonth.monthValue
             }
         }
-        return raw.onFailure { Logger.e("Invalid patch level format: $this", it) }.getOrDefault(202404)
+        // Invalid platform values omit the tag rather than inventing a stale patch level.
+        return raw.onFailure { Logger.e("Invalid patch level format; omitting patch level", it) }
+            .getOrDefault(DO_NOT_REPORT)
     }
 
     private val keystore2: KeyStore2 by lazy { KeyStore2.getInstance() }
 
     fun getSupplementaryAttestationInfo(tag: Int): ByteArray? =
         runCatching { keystore2.getSupplementaryAttestationInfo(tag) }.getOrNull()
+
+    /**
+     * Returns a UID-independent fingerprint of the current package membership and signing
+     * certificate history. Package membership is read from PackageManager on every call.
+     */
+    fun packageSigningIdentityFingerprint(
+        pm: IPackageManager,
+        uid: Int,
+        userId: Int = uid / 100000,
+    ): ByteArray? =
+        runCatching {
+                val packages = pm.getPackagesForUid(uid)?.sorted() ?: return null
+                val digest = MessageDigest.getInstance("SHA-256")
+                val payload = ByteArrayOutputStream()
+                packages.forEach { packageName ->
+                    val info =
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                            pm.getPackageInfo(
+                                packageName,
+                                PackageManager.GET_SIGNING_CERTIFICATES.toLong(),
+                                userId,
+                            )
+                        } else {
+                            pm.getPackageInfo(packageName, PackageManager.GET_SIGNING_CERTIFICATES, userId)
+                        }
+                    val certificates =
+                        info.signingInfo?.signingCertificateHistory
+                            ?.map { MessageDigest.getInstance("SHA-256").digest(it.toByteArray()).toHex() }
+                            ?.sorted()
+                            ?: return null
+                    val packageBytes = packageName.toByteArray(StandardCharsets.UTF_8)
+                    val certificateBytes = certificates.joinToString(",").toByteArray(StandardCharsets.UTF_8)
+                    val bytes = ByteArrayOutputStream().apply {
+                        write((packageBytes.size ushr 24) and 0xff)
+                        write((packageBytes.size ushr 16) and 0xff)
+                        write((packageBytes.size ushr 8) and 0xff)
+                        write(packageBytes.size and 0xff)
+                        write(packageBytes)
+                        write((certificateBytes.size ushr 24) and 0xff)
+                        write((certificateBytes.size ushr 16) and 0xff)
+                        write((certificateBytes.size ushr 8) and 0xff)
+                        write(certificateBytes.size and 0xff)
+                        write(certificateBytes)
+                    }.toByteArray()
+                    payload.write((bytes.size ushr 24) and 0xff)
+                    payload.write((bytes.size ushr 16) and 0xff)
+                    payload.write((bytes.size ushr 8) and 0xff)
+                    payload.write(bytes.size and 0xff)
+                    payload.write(bytes)
+                }
+                digest.digest(payload.toByteArray())
+            }
+            .getOrNull()
 
     val moduleHash: ByteArray by lazy {
         getSupplementaryAttestationInfo(KeyStoreManager.MODULE_HASH)?.let {

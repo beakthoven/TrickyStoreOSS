@@ -53,20 +53,18 @@ internal object KeyMintVersionResolver {
             else -> null
         }
 
-    // The framework has no Java binding for android.security.compat, so call it directly.
-    // getKeyMintDevice is the first method of IKeystoreCompatService from Android 12 through 16.
     private const val COMPAT_DESCRIPTOR = "android.security.compat.IKeystoreCompatService"
     private const val TRANSACTION_GET_KEYMINT_DEVICE = IBinder.FIRST_CALL_TRANSACTION
 
     private fun compatKeyMintDevice(binder: IBinder, securityLevel: Int): IKeyMintDevice? {
         val data = Parcel.obtain()
         val reply = Parcel.obtain()
-        try {
+        return try {
             data.writeInterfaceToken(COMPAT_DESCRIPTOR)
             data.writeInt(securityLevel)
             if (!binder.transact(TRANSACTION_GET_KEYMINT_DEVICE, data, reply, 0)) return null
             reply.readException()
-            return reply.readStrongBinder()?.let { IKeyMintDevice.Stub.asInterface(it) }
+            reply.readStrongBinder()?.let { IKeyMintDevice.Stub.asInterface(it) }
         } finally {
             reply.recycle()
             data.recycle()
@@ -78,8 +76,8 @@ internal object KeyMintVersionResolver {
         val binder = ServiceManager.checkService(serviceName) ?: return null
 
         return runCatching {
-                val keyMint =
-                    compatKeyMintDevice(binder, securityLevel) ?: error("No compat KeyMint device for level $securityLevel")
+                val keyMint = compatKeyMintDevice(binder, securityLevel)
+                    ?: error("No compat KeyMint device for level $securityLevel")
                 val hardwareInfo = keyMint.hardwareInfo
                 require(hardwareInfo.securityLevel == securityLevel) {
                     "Compat KeyMint security level ${hardwareInfo.securityLevel}, requested $securityLevel"
