@@ -21,6 +21,8 @@ fun main(args: Array<String>) {
     Security.addProvider(BouncyCastleProvider())
 
     try {
+        val probe = AttestUtils.probe()
+        Logger.i("Startup attestation probe: ${probe.status} (${probe.failureCategory ?: "none"})")
         AndroidUtils.setupBootHash()
         initializeInterceptors()
         maintainService()
