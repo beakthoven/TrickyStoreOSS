@@ -53,7 +53,7 @@ internal object KeyMintVersionResolver {
             else -> null
         }
 
-    // The compat Java binding is not guaranteed to be available in the daemon runtime.
+    // The framework has no Java binding for android.security.compat, so call it directly.
     // getKeyMintDevice is the first method of IKeystoreCompatService from Android 12 through 16.
     private const val COMPAT_DESCRIPTOR = "android.security.compat.IKeystoreCompatService"
     private const val TRANSACTION_GET_KEYMINT_DEVICE = IBinder.FIRST_CALL_TRANSACTION
