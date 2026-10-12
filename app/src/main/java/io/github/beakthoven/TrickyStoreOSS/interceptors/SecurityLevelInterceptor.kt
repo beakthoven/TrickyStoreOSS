@@ -9,17 +9,21 @@ import android.hardware.security.keymint.Algorithm
 import android.hardware.security.keymint.KeyParameter
 import android.hardware.security.keymint.KeyParameterValue
 import android.hardware.security.keymint.KeyPurpose
+import android.hardware.security.keymint.SecurityLevel
 import android.hardware.security.keymint.Tag
 import android.os.IBinder
 import android.os.Parcel
+import android.os.ServiceSpecificException
 import android.security.keymaster.KeymasterDefs
 import android.system.keystore2.Authorization
+import android.system.keystore2.Domain
 import android.system.keystore2.CreateOperationResponse
 import android.system.keystore2.IKeystoreSecurityLevel
 import android.system.keystore2.KeyDescriptor
 import android.system.keystore2.KeyEntryResponse
 import android.system.keystore2.KeyMetadata
 import android.system.keystore2.KeyParameters
+import android.system.keystore2.KeyPermission
 import android.system.keystore2.ResponseCode
 import androidx.annotation.Keep
 import io.github.beakthoven.TrickyStoreOSS.AndroidUtils
@@ -37,6 +41,7 @@ import io.github.beakthoven.TrickyStoreOSS.putCertificateChain
 import java.security.KeyPair
 import java.security.SecureRandom
 import java.security.cert.Certificate
+import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.locks.LockSupport
 
@@ -57,12 +62,33 @@ class SecurityLevelInterceptor(private val original: IKeystoreSecurityLevel, pri
 
     companion object {
         private const val DEFAULT_KEYGEN_MS = 3.0
+        private const val MAX_PLAUSIBLE_TIMESTAMP_MS = 4_102_444_800_000L
         private val generateKeyTransaction = getTransactCode(IKeystoreSecurityLevel.Stub::class.java, "generateKey")
         private val createOperationTransaction =
             getTransactCode(IKeystoreSecurityLevel.Stub::class.java, "createOperation")
         private val importKeyTransaction = getTransactCode(IKeystoreSecurityLevel.Stub::class.java, "importKey")
 
         private val secureRandom = SecureRandom()
+
+        private fun softwarePolicySupported(params: Array<KeyParameter>): Boolean {
+            val noAuth = params.filter { it.tag == Tag.NO_AUTH_REQUIRED }
+            if (noAuth.size != 1 || runCatching { !noAuth.single().value.boolValue }.getOrDefault(true)) return false
+            return params.none {
+                it.tag == Tag.USER_SECURE_ID ||
+                    it.tag == Tag.USER_AUTH_TYPE ||
+                    it.tag == Tag.AUTH_TIMEOUT ||
+                    it.tag == Tag.ALLOW_WHILE_ON_BODY ||
+                    it.tag == Tag.TRUSTED_USER_PRESENCE_REQUIRED ||
+                    it.tag == Tag.TRUSTED_CONFIRMATION_REQUIRED ||
+                    it.tag == Tag.UNLOCKED_DEVICE_REQUIRED ||
+                    it.tag == Tag.EARLY_BOOT_ONLY ||
+                    it.tag == Tag.ROLLBACK_RESISTANCE ||
+                    it.tag == Tag.STORAGE_KEY ||
+                    it.tag == Tag.IDENTITY_CREDENTIAL_KEY ||
+                    it.tag == Tag.MIN_SECONDS_BETWEEN_OPS ||
+                    it.tag == Tag.MAX_USES_PER_BOOT
+            }
+        }
 
         @Keep val keys = ConcurrentHashMap<Key, Info>()
 
@@ -82,83 +108,228 @@ class SecurityLevelInterceptor(private val original: IKeystoreSecurityLevel, pri
             return key.alias
         }
 
-        private fun resolveOwnerKeys(uid: Int, descriptor: KeyDescriptor): List<Key> {
-            val candidates = ArrayList<Key>(3)
-            if (descriptor.nspace != 0L) {
-                keysByNspace[descriptor.nspace]?.takeIf { it.uid == uid }?.let { candidates.add(it) }
-                grants[descriptor.nspace]?.takeIf { it.granteeUid == uid }?.let { candidates.add(it.key) }
-            }
-            descriptor.alias?.let { candidates.add(Key(uid, it)) }
-            return candidates
+        enum class AccessAction(val permission: Int) {
+            GET_INFO(KeyPermission.GET_INFO),
+            USE(KeyPermission.USE),
+            UPDATE(KeyPermission.UPDATE),
+            DELETE(KeyPermission.DELETE),
+            GRANT(KeyPermission.GRANT),
         }
 
-        @Keep
-        fun findGeneratedKey(uid: Int, descriptor: KeyDescriptor): Info? =
-            resolveOwnerKeys(uid, descriptor).firstNotNullOfOrNull { keys[it] }
+        enum class DescriptorProvenance { APP_OWNER, KEY_ID_OWNER, GRANT }
 
-        @Keep
-        fun resolvePatchedResponse(uid: Int, descriptor: KeyDescriptor): KeyEntryResponse? =
-            resolveOwnerKeys(uid, descriptor).firstNotNullOfOrNull { patchedResponses[it] }
-
-        @Keep fun isPatchedKey(key: Key): Boolean = keys.containsKey(key) || patchedResponses.containsKey(key)
-
-        @Keep
-        fun shouldSkipLeafHackFor(uid: Int, descriptor: KeyDescriptor): Boolean =
-            resolveOwnerKeys(uid, descriptor).firstNotNullOfOrNull { skipLeafHacks[it] } ?: false
+        data class AuthorizedKey(
+            val key: Key,
+            val info: Info?,
+            val provenance: DescriptorProvenance,
+            val accessVector: Int,
+            val allowed: Boolean,
+        )
 
         @Keep val grants = ConcurrentHashMap<Long, GrantInfo>()
 
         @Keep
-        fun resolveKey(uid: Int, descriptor: KeyDescriptor): Key? {
-            if (descriptor.nspace != 0L) {
-                keysByNspace[descriptor.nspace]
-                    ?.takeIf { it.uid == uid }
-                    ?.let {
-                        return it
-                    }
+        fun resolveAuthorizedKey(uid: Int, descriptor: KeyDescriptor, action: AccessAction): AuthorizedKey? {
+            val key: Key
+            val provenance: DescriptorProvenance
+            val accessVector: Int
+            when (descriptor.domain) {
+                Domain.APP -> {
+                    // keystore2 uses -1 as the APP namespace sentinel for the calling UID.
+                    if (descriptor.nspace != -1L && descriptor.nspace != uid.toLong()) return null
+                    key = descriptor.alias?.let { Key(uid, it) } ?: return null
+                    provenance = DescriptorProvenance.APP_OWNER
+                    accessVector = OWNER_ACCESS
+                }
+                Domain.KEY_ID -> {
+                    key = keysByNspace[descriptor.nspace]?.takeIf { it.uid == uid } ?: return null
+                    provenance = DescriptorProvenance.KEY_ID_OWNER
+                    accessVector = OWNER_ACCESS
+                }
+                Domain.GRANT -> {
+                    val grant = grants[descriptor.nspace]?.takeIf { it.granteeUid == uid } ?: return null
+                    key = grant.key
+                    provenance = DescriptorProvenance.GRANT
+                    accessVector = grant.accessVector
+                }
+                else -> return null
             }
-            return descriptor.alias?.let { Key(uid, it) }
+            return withKeyLock(key) {
+                if (descriptor.domain == Domain.KEY_ID && keysByNspace[descriptor.nspace] != key) return@withKeyLock null
+                if (descriptor.domain == Domain.GRANT && grants[descriptor.nspace]?.let {
+                        it.granteeUid == uid && it.key == key
+                    } != true) return@withKeyLock null
+                AuthorizedKey(
+                    key,
+                    keys[key],
+                    provenance,
+                    accessVector,
+                    accessVector and action.permission != 0,
+                )
+            }
+        }
+
+        private const val OWNER_ACCESS = KeyPermission.GET_INFO or KeyPermission.USE or KeyPermission.UPDATE or
+            KeyPermission.DELETE or KeyPermission.GRANT
+
+        @Keep
+        fun resolveDesignatedAttestationKey(uid: Int, descriptor: KeyDescriptor): AuthorizedKey? =
+            resolveAuthorizedKey(uid, descriptor, AccessAction.USE)?.takeIf { it.allowed }
+
+        @Keep
+        fun findGeneratedKey(uid: Int, descriptor: KeyDescriptor): Info? =
+            resolveAuthorizedKey(uid, descriptor, AccessAction.GET_INFO)?.takeIf { it.allowed }?.info
+
+        @Keep
+        fun resolvePatchedResponse(uid: Int, descriptor: KeyDescriptor): KeyEntryResponse? {
+            val resolved = resolveAuthorizedKey(uid, descriptor, AccessAction.GET_INFO)?.takeIf { it.allowed } ?: return null
+            return patchedResponses[resolved.key]
+        }
+
+        @Keep fun isPatchedKey(key: Key): Boolean = keys.containsKey(key) || patchedResponses.containsKey(key)
+
+        @Keep
+        fun shouldSkipLeafHackFor(uid: Int, descriptor: KeyDescriptor): Boolean {
+            val resolved = resolveAuthorizedKey(uid, descriptor, AccessAction.GET_INFO)?.takeIf { it.allowed }
+                ?: return false
+            return skipLeafHacks[resolved.key] ?: false
         }
 
         @Keep
-        fun updateKeyCertChain(key: Key, publicCert: ByteArray?, certificateChain: ByteArray?) {
-            keys[key]?.let {
-                it.response.metadata.certificate = publicCert
-                it.response.metadata.certificateChain = certificateChain
+        fun resolveKey(uid: Int, descriptor: KeyDescriptor): Key? =
+            resolveAuthorizedKey(uid, descriptor, AccessAction.GET_INFO)?.takeIf { it.allowed }?.key
+
+        @Keep
+        fun updateKeyCertChain(key: Key, publicCert: ByteArray?, certificateChain: ByteArray?): Boolean = withKeyLock(key) {
+            val info = keys[key] ?: return@withKeyLock false
+            val certs = runCatching {
+                with(CertificateUtils) {
+                    (publicCert?.toCertificate()?.let { listOf<Certificate>(it) } ?: emptyList()) +
+                        (certificateChain?.toCertificates() ?: emptyList())
+                }
+            }.getOrNull() ?: return@withKeyLock false
+            val metadata = copyMetadata(info.response.metadata) ?: return@withKeyLock false
+            val ownerIdentity = PkgConfig.getPm()?.let { AndroidUtils.packageSigningIdentityFingerprint(it, key.uid) }
+                ?: return@withKeyLock false
+            metadata.certificate = publicCert
+            metadata.certificateChain = certificateChain
+            metadata.modificationTimeMs = System.currentTimeMillis()
+            val saved = PersistenceManager.saveKey(
+                key.uid, key.alias, metadata.keySecurityLevel, false, metadata.key?.nspace ?: 0L,
+                Domain.APP, info.keyPair, info.secretKey, certs, marshalMetadata(metadata), info.params,
+                currentUseState(key, info.params), ownerIdentity,
+            )
+            if (!saved) {
+                Logger.e("Unable to persist certificate update uid=${key.uid} alias=${key.alias}")
+                return@withKeyLock false
             }
-            patchedResponses[key]?.metadata?.let {
-                it.certificate = publicCert
-                it.certificateChain = certificateChain
-            }
+            info.response.metadata = metadata
+            patchedResponses[key]?.metadata = copyMetadata(metadata) ?: metadata
+            info.keyPair?.let { keyPairs[key] = it to certs }
             skipLeafHacks.remove(key)
+            true
         }
+
+        private fun copyMetadata(metadata: KeyMetadata): KeyMetadata? =
+            marshalMetadata(metadata)?.let(::unmarshalMetadata)
+
+        private fun unmarshalMetadata(bytes: ByteArray): KeyMetadata? = runCatching {
+            Parcel.obtain().let { p ->
+                try {
+                    p.unmarshall(bytes, 0, bytes.size)
+                    p.setDataPosition(0)
+                    p.readTypedObject(KeyMetadata.CREATOR)
+                } finally {
+                    p.recycle()
+                }
+            }
+        }.getOrNull()
+
+        private fun marshalMetadata(metadata: KeyMetadata): ByteArray? = runCatching {
+            Parcel.obtain().let { p ->
+                try {
+                    p.writeTypedObject(metadata, 0)
+                    p.marshall()
+                } finally {
+                    p.recycle()
+                }
+            }
+        }.getOrNull()
+
+        private fun currentUseState(key: Key, params: CertificateGen.KeyGenParameters): PersistenceManager.UseState? =
+            if (params.usageCountLimit <= 0 && params.maxUsesPerBoot <= 0) null else
+                PersistenceManager.UseState(
+                    usageRemaining[key], perBootRemaining[key], bootIdentity(),
+                )
 
         @Keep val usageRemaining = ConcurrentHashMap<Key, Int>()
+        @Keep val perBootRemaining = ConcurrentHashMap<Key, Int>()
+        private val usageLocks = ConcurrentHashMap<Key, Any>()
+
+        internal fun <T> withKeyLock(key: Key, action: () -> T): T =
+            synchronized(usageLocks.computeIfAbsent(key) { Any() }, action)
 
         @Keep
-        fun cleanupKey(uid: Int, alias: String) {
-            val k = Key(uid, alias)
-            keys[k]?.response?.metadata?.key?.nspace?.let { keysByNspace.remove(it) }
-            keys.remove(k)
-            keyPairs.remove(k)
-            skipLeafHacks.remove(k)
-            patchedResponses.remove(k)
-            usageRemaining.remove(k)
-            grants.values.removeIf { it.key == k }
-            CertificateHack.leafAlgorithms.remove(CertificateHack.KeyIdentifier(alias, uid))
-            PersistenceManager.deleteKey(uid, alias)
+        fun consumeUsage(key: Key, params: CertificateGen.KeyGenParameters) {
+            withKeyLock(key) {
+                val lifetimeBefore = usageRemaining[key]
+                val perBootBefore = perBootRemaining[key]
+                if ((params.usageCountLimit > 0 && (lifetimeBefore ?: params.usageCountLimit) <= 0) ||
+                    (params.maxUsesPerBoot > 0 && (perBootBefore ?: params.maxUsesPerBoot) <= 0)) {
+                    throw ServiceSpecificException(KeymasterDefs.KM_ERROR_KEY_MAX_OPS_EXCEEDED, "Key usage limit exhausted")
+                }
+                if (params.usageCountLimit > 0) usageRemaining[key] = (lifetimeBefore ?: params.usageCountLimit) - 1
+                if (params.maxUsesPerBoot > 0) perBootRemaining[key] = (perBootBefore ?: params.maxUsesPerBoot) - 1
+                if (!persistUsageState(key)) {
+                    if (lifetimeBefore == null) usageRemaining.remove(key) else usageRemaining[key] = lifetimeBefore
+                    if (perBootBefore == null) perBootRemaining.remove(key) else perBootRemaining[key] = perBootBefore
+                    throw ServiceSpecificException(ResponseCode.SYSTEM_ERROR, "Unable to persist key usage")
+                }
+            }
+        }
+
+        private fun persistUsageState(key: Key): Boolean {
+            val info = keys[key] ?: return false
+            val metadata = marshalMetadata(info.response.metadata) ?: return false
+            return PersistenceManager.saveKey(
+                key.uid, key.alias, info.response.metadata.keySecurityLevel, skipLeafHacks[key] == true,
+                info.response.metadata.key?.nspace ?: 0L, Domain.KEY_ID, info.keyPair, info.secretKey,
+                keyPairs[key]?.second, metadata, info.params, currentUseState(key, info.params),
+                PkgConfig.getPm()?.let { AndroidUtils.packageSigningIdentityFingerprint(it, key.uid) },
+            )
+        }
+
+        private fun bootIdentity(): String? = runCatching {
+            File("/proc/sys/kernel/random/boot_id").readText().trim().takeIf { it.isNotEmpty() }
+        }.getOrNull()
+
+        private fun normalizeModificationTime(value: Long): Long {
+            val now = System.currentTimeMillis()
+            return if (value in 1..4_102_444_800L && value <= now / 1000L) value * 1000L else value
         }
 
         @Keep
-        fun cleanupAll() {
-            keys.clear()
-            keyPairs.clear()
-            skipLeafHacks.clear()
+        fun cleanupKey(uid: Int, alias: String): Boolean {
+            val k = Key(uid, alias)
+            return withKeyLock(k) {
+                if (!PersistenceManager.deleteKey(uid, alias)) return@withKeyLock false
+                keys[k]?.response?.metadata?.key?.nspace?.let { keysByNspace.remove(it) }
+                keys.remove(k)
+                keyPairs.remove(k)
+                skipLeafHacks.remove(k)
+                patchedResponses.remove(k)
+                usageRemaining.remove(k)
+                perBootRemaining.remove(k)
+                grants.values.removeIf { it.key == k }
+                CertificateHack.leafAlgorithms.remove(CertificateHack.KeyIdentifier(alias, uid))
+                true
+            }
+        }
+
+        @Keep
+        fun invalidatePatchedResponses() {
             patchedResponses.clear()
-            keysByNspace.clear()
-            usageRemaining.clear()
-            grants.clear()
-            PersistenceManager.clearAll()
+            CertificateHack.clearLeafAlgorithms()
         }
     }
 
@@ -194,6 +365,13 @@ class SecurityLevelInterceptor(private val original: IKeystoreSecurityLevel, pri
                 val params = data.createTypedArray(KeyParameter.CREATOR)!!
                 val aFlags = data.readInt()
                 val entropy = data.createByteArray()
+                val hasSoftwareTarget = PkgConfig.needGenerate(callingUid)
+                val hasLeafTarget = PkgConfig.needHack(callingUid)
+                if (!hasSoftwareTarget && !hasLeafTarget) return Skip
+                if (!softwarePolicySupported(params)) {
+                    Logger.i("Forwarding unsupported or incomplete authorization policy uid=$callingUid")
+                    return Skip
+                }
                 val kgp = CertificateGen.KeyGenParameters(params)
                 val challenge = kgp.attestationChallenge
                 if (challenge != null && challenge.size > MAX_ATTESTATION_CHALLENGE_BYTES) {
@@ -227,11 +405,17 @@ class SecurityLevelInterceptor(private val original: IKeystoreSecurityLevel, pri
                         "Caller lacks READ_PRIVILEGED_PHONE_STATE",
                     )
                 }
-                val forceForge =
-                    PkgConfig.needGenerate(callingUid) ||
-                        hasDeviceIdAttestation ||
-                        kgp.purpose.contains(KeyPurpose.ATTEST_KEY) ||
-                        attestationKeyDescriptor != null
+                if (attestationKeyDescriptor != null) {
+                    val designated = resolveAuthorizedKey(callingUid, attestationKeyDescriptor, AccessAction.USE)
+                    if (designated?.info == null) {
+                        return if (PkgConfig.needHack(callingUid)) forwardKeygen(keyDescriptor.alias, startNanos) else Skip
+                    }
+                    if (!designated.allowed) return errorReply(ResponseCode.PERMISSION_DENIED, "USE permission not granted")
+                    if (designated.info.params.purpose != listOf(KeyPurpose.ATTEST_KEY)) {
+                        return errorReply(KeymasterDefs.KM_ERROR_INVALID_ARGUMENT, "Designated key is not an ATTEST_KEY")
+                    }
+                }
+                val forceForge = hasSoftwareTarget
                 when {
                     forceForge -> {
                         val isSymmetric = kgp.algorithm == Algorithm.AES || kgp.algorithm == Algorithm.HMAC
@@ -270,7 +454,7 @@ class SecurityLevelInterceptor(private val original: IKeystoreSecurityLevel, pri
                                 attestationKeyDescriptor,
                                 kgp,
                                 level,
-                            ) ?: return@runCatching
+                            ) ?: return errorReply(KeymasterDefs.KM_ERROR_UNKNOWN_ERROR, "Software attestation generation failed")
                         return storeGeneratedKey(
                             callingUid,
                             keyDescriptor,
@@ -298,8 +482,15 @@ class SecurityLevelInterceptor(private val original: IKeystoreSecurityLevel, pri
             val raw = runCatching {
                 data.enforceInterface(IKeystoreSecurityLevel.DESCRIPTOR)
                 val descriptor = data.readTypedObject(KeyDescriptor.CREATOR) ?: return@runCatching null
-                val info = findGeneratedKey(callingUid, descriptor)
-                if (info == null) return@runCatching null
+                val resolved = resolveAuthorizedKey(callingUid, descriptor, AccessAction.USE)
+                if (resolved == null || resolved.info == null) return@runCatching null
+                if (!resolved.allowed) {
+                    return@runCatching errorReply(ResponseCode.PERMISSION_DENIED, "USE permission not granted")
+                }
+                val info = resolved.info
+                if (!info.params.noAuthRequiredIsValid) {
+                    return@runCatching errorReply(ResponseCode.PERMISSION_DENIED, "Legacy or unsupported authorization policy")
+                }
                 val opParams = data.createTypedArray(KeyParameter.CREATOR) ?: emptyArray<KeyParameter>()
                 // AIDL: createOperation(KeyDescriptor, KeyParameter[], boolean force)
                 val force = data.dataAvail() > 0 && data.readBoolean()
@@ -311,12 +502,12 @@ class SecurityLevelInterceptor(private val original: IKeystoreSecurityLevel, pri
                     )
                 }
                 val key = resolveKey(callingUid, descriptor)
-                if (key != null && info.params.usageCountLimit > 0) {
-                    val remaining = usageRemaining[key]
-                    if (remaining != null && remaining <= 0) {
-                        Logger.i("createOperation: usage exhausted uid=$callingUid alias=${descriptor.alias}")
-                        return@runCatching errorReply(ResponseCode.KEY_NOT_FOUND, "Key usage limit exhausted")
-                    }
+                if (key != null &&
+                    ((info.params.usageCountLimit > 0 && (usageRemaining[key] ?: info.params.usageCountLimit) <= 0) ||
+                        (info.params.maxUsesPerBoot > 0 && (perBootRemaining[key] ?: info.params.maxUsesPerBoot) <= 0))
+                ) {
+                    Logger.i("createOperation: usage exhausted uid=$callingUid alias=${descriptor.alias}")
+                    return@runCatching errorReply(KeymasterDefs.KM_ERROR_KEY_MAX_OPS_EXCEEDED, "Key usage limit exhausted")
                 }
                 val opRequest = OpRequest.parse(opParams)
                 val errCode = authorizeOperation(info.params, opRequest)
@@ -337,7 +528,17 @@ class SecurityLevelInterceptor(private val original: IKeystoreSecurityLevel, pri
                     }
                 typedReply(response)
             }
-            val result = raw.onFailure { Logger.e("handle createOperation request", it) }.getOrNull()
+            val result =
+                raw.fold(
+                    onSuccess = { it },
+                    onFailure = {
+                        Logger.e("handle createOperation request", it)
+                        errorReply(
+                            (it as? android.os.ServiceSpecificException)?.errorCode ?: ResponseCode.SYSTEM_ERROR,
+                            "Software operation failed",
+                        )
+                    },
+                )
             if (result != null) return result
         }
         return Skip
@@ -407,31 +608,40 @@ class SecurityLevelInterceptor(private val original: IKeystoreSecurityLevel, pri
         skipLeafHack: Boolean,
         startNanos: Long,
     ): Result {
-        keyDescriptor.nspace = secureRandom.nextLong()
+        val ownerIdentityFingerprint = PkgConfig.getPm()?.let {
+            AndroidUtils.packageSigningIdentityFingerprint(it, callingUid)
+        } ?: return errorReply(ResponseCode.SYSTEM_ERROR, "Unable to verify key owner identity")
         val key = Key(callingUid, keyDescriptor.alias)
-        keysByNspace[keyDescriptor.nspace] = key
-        if (keyPair != null && chain != null) keyPairs[key] = Pair(keyPair, chain)
-        val response = buildResponse(chain, kgp, keyDescriptor, callingUid)
-        keys[key] = Info(keyPair, secretKey, response, kgp)
-        if (kgp.usageCountLimit > 0) usageRemaining[key] = kgp.usageCountLimit
-        if (skipLeafHack) skipLeafHacks[key] = true
-        if (keyPair != null || secretKey != null) {
-            PersistenceManager.saveKey(
-                callingUid,
-                keyDescriptor.alias,
-                level,
-                skipLeafHack,
-                keyDescriptor.nspace,
-                keyDescriptor.domain,
-                keyPair,
-                secretKey,
-                chain,
-                marshalKeyMetadata(response.metadata),
-                kgp,
-            )
-        }
+        val result = withKeyLock(key) {
+            val previousNspace = keys[key]?.response?.metadata?.key?.nspace
+            keyDescriptor.nspace = secureRandom.nextLong()
+            val response = buildResponse(chain, kgp, keyDescriptor, callingUid)
+            val boot = bootIdentity()
+            if (keyPair != null || secretKey != null) {
+                val saved = PersistenceManager.saveKey(
+                    callingUid, keyDescriptor.alias, level, skipLeafHack, keyDescriptor.nspace,
+                    keyDescriptor.domain, keyPair, secretKey, chain, marshalKeyMetadata(response.metadata), kgp,
+                    PersistenceManager.UseState(
+                        kgp.usageCountLimit.takeIf { it > 0 },
+                        kgp.maxUsesPerBoot.takeIf { it > 0 },
+                        boot,
+                    ),
+                    ownerIdentityFingerprint,
+                )
+                if (!saved) return@withKeyLock null
+            }
+            previousNspace?.let { keysByNspace.remove(it, key) }
+            keys[key] = Info(keyPair, secretKey, response, kgp)
+            keyPairs.remove(key)
+            if (keyPair != null && chain != null) keyPairs[key] = keyPair to chain
+            keysByNspace[keyDescriptor.nspace] = key
+            if (kgp.usageCountLimit > 0) usageRemaining[key] = kgp.usageCountLimit else usageRemaining.remove(key)
+            if (kgp.maxUsesPerBoot > 0) perBootRemaining[key] = kgp.maxUsesPerBoot else perBootRemaining.remove(key)
+            if (skipLeafHack) skipLeafHacks[key] = true else skipLeafHacks.remove(key)
+            response
+        } ?: return errorReply(ResponseCode.SYSTEM_ERROR, "Unable to persist generated key")
         padForgedKeygen(startNanos)
-        return typedReply(response.metadata)
+        return typedReply(result.metadata)
     }
 
     private fun forwardKeygen(alias: String?, startNanos: Long): Result {
@@ -461,7 +671,8 @@ class SecurityLevelInterceptor(private val original: IKeystoreSecurityLevel, pri
         val response = KeyEntryResponse()
         val metadata = KeyMetadata()
         metadata.keySecurityLevel = level
-        metadata.modificationTimeMs = System.currentTimeMillis() / 1000
+        val createdAtMs = params.createdAtMs ?: System.currentTimeMillis().also { params.createdAtMs = it }
+        metadata.modificationTimeMs = createdAtMs
         if (chain != null && chain.isNotEmpty()) {
             metadata.putCertificateChain(chain.toTypedArray()).getOrThrow()
         } else {
@@ -502,7 +713,7 @@ class SecurityLevelInterceptor(private val original: IKeystoreSecurityLevel, pri
         if (AndroidUtils.bootPatchLevelLong(callingUid) != AndroidUtils.DO_NOT_REPORT)
             tee(Tag.BOOT_PATCHLEVEL, KeyParameterValue.integer(AndroidUtils.bootPatchLevelLong(callingUid)))
 
-        sw(Tag.CREATION_DATETIME, KeyParameterValue.dateTime(System.currentTimeMillis()))
+        authorizations.add(auth(Tag.CREATION_DATETIME, KeyParameterValue.dateTime(createdAtMs), SecurityLevel.KEYSTORE))
         params.activeDateTime?.let { sw(Tag.ACTIVE_DATETIME, KeyParameterValue.dateTime(it)) }
         params.originationExpireDateTime?.let { sw(Tag.ORIGINATION_EXPIRE_DATETIME, KeyParameterValue.dateTime(it)) }
         params.usageExpireDateTime?.let { sw(Tag.USAGE_EXPIRE_DATETIME, KeyParameterValue.dateTime(it)) }
@@ -528,7 +739,9 @@ class SecurityLevelInterceptor(private val original: IKeystoreSecurityLevel, pri
         }
 
     fun loadPersistedKeys() {
-        PersistenceManager.loadAll()
+        PersistenceManager.loadAll { uid ->
+            PkgConfig.getPm()?.let { AndroidUtils.packageSigningIdentityFingerprint(it, uid) }
+        }
             .filter { it.securityLevel == level }
             .forEach { pk ->
                 val raw = runCatching {
@@ -541,6 +754,15 @@ class SecurityLevelInterceptor(private val original: IKeystoreSecurityLevel, pri
                     val metadata = pk.metadataBytes?.let { unmarshalKeyMetadata(it) }
                     val response =
                         if (metadata != null) {
+                            if (pk.params.createdAtMs == null) {
+                                val createdAt = metadata.authorizations
+                                    ?.firstOrNull { it.keyParameter?.tag == Tag.CREATION_DATETIME }
+                                    ?.keyParameter?.value?.dateTime
+                                if (createdAt != null && createdAt in 0..MAX_PLAUSIBLE_TIMESTAMP_MS) {
+                                    pk.params.createdAtMs = createdAt
+                                }
+                            }
+                            metadata.modificationTimeMs = normalizeModificationTime(metadata.modificationTimeMs)
                             KeyEntryResponse().apply {
                                 this.metadata = metadata
                                 iSecurityLevel = original
@@ -549,10 +771,29 @@ class SecurityLevelInterceptor(private val original: IKeystoreSecurityLevel, pri
                             buildResponse(pk.chain, pk.params, descriptor, pk.uid)
                         }
                     val key = Key(pk.uid, pk.alias)
-                    keys[key] = Info(pk.keyPair, pk.secretKey, response, pk.params)
-                    if (pk.keyPair != null) keyPairs[key] = Pair(pk.keyPair, pk.chain)
-                    if (pk.nspace != 0L) keysByNspace[pk.nspace] = key
-                    if (pk.skipLeafHack) skipLeafHacks[key] = true
+                    withKeyLock(key) {
+                        keys[key] = Info(pk.keyPair, pk.secretKey, response, pk.params)
+                        if (pk.keyPair != null) keyPairs[key] = Pair(pk.keyPair, pk.chain) else keyPairs.remove(key)
+                        if (pk.nspace != 0L) keysByNspace[pk.nspace] = key
+                        if (pk.skipLeafHack) skipLeafHacks[key] = true else skipLeafHacks.remove(key)
+                        pk.useState?.let { state ->
+                            if (pk.params.usageCountLimit > 0) usageRemaining[key] = state.lifetimeRemaining ?: 0
+                            if (pk.params.maxUsesPerBoot > 0) {
+                                perBootRemaining[key] = if (state.bootIdentity == bootIdentity()) state.perBootRemaining ?: 0 else pk.params.maxUsesPerBoot
+                            }
+                        }
+                        if (pk.ownerIdentityFingerprint != null) {
+                            val normalized = metadata?.let { marshalKeyMetadata(it) }
+                            val state = currentUseState(key, pk.params)
+                            if (normalized != null && (pk.useState?.bootIdentity != bootIdentity() || pk.params.createdAtMs != null)) {
+                                PersistenceManager.saveKey(
+                                    pk.uid, pk.alias, level, pk.skipLeafHack, pk.nspace, pk.domain,
+                                    pk.keyPair, pk.secretKey, pk.chain, normalized, pk.params, state,
+                                    pk.ownerIdentityFingerprint,
+                                )
+                            }
+                        }
+                    }
                     Logger.i("Restored persisted key uid=${pk.uid} alias=${pk.alias}")
                 }
                 raw.onFailure { Logger.e("Failed to restore persisted key uid=${pk.uid} alias=${pk.alias}", it) }
