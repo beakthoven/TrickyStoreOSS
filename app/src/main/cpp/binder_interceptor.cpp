@@ -480,6 +480,9 @@ status_t BinderInterceptor::validateInterceptorResponse(const Parcel &response, 
 
 namespace {
 constexpr std::string_view kBinderLibraryName = "libbinder.so";
+// Android Canary can bundle libbinder and libutils into this shared object.
+// dl_iterate_phdr reports the loaded object's name, not its libbinder.so symlink.
+constexpr std::string_view kCoreBundleLibraryName = "libcore_bundle.so";
 constexpr std::string_view kIoctlFunctionName = "ioctl";
 struct plti g_plti_ctx;
 } // namespace
@@ -495,17 +498,26 @@ bool initializeBinderInterception() {
 
     plti_init(&g_plti_ctx);
 
-    if (!plti_add_lib(&g_plti_ctx, kBinderLibraryName.data())) {
-        LOGE("Failed to find %s via dl_iterate_phdr", kBinderLibraryName.data());
+    const char *binder_library = kBinderLibraryName.data();
+    bool binder_library_found = plti_add_lib(&g_plti_ctx, binder_library);
+    if (!binder_library_found) {
+        LOGI("%s is not loaded separately; trying %s", binder_library, kCoreBundleLibraryName.data());
+        binder_library = kCoreBundleLibraryName.data();
+        binder_library_found = plti_add_lib(&g_plti_ctx, binder_library);
+    }
+    if (!binder_library_found) {
+        LOGE("Neither %s nor %s is available for Binder interception",
+             kBinderLibraryName.data(), kCoreBundleLibraryName.data());
         g_binder_interceptor.clear();
         g_binder_stub.clear();
         return false;
     }
 
-    if (!plti_add_hook(&g_plti_ctx, kBinderLibraryName.data(), kIoctlFunctionName.data(),
+    LOGI("Installing Binder ioctl interception in %s", binder_library);
+    if (!plti_add_hook(&g_plti_ctx, binder_library, kIoctlFunctionName.data(),
                        reinterpret_cast<void *>(intercepted_ioctl_function),
                        reinterpret_cast<void **>(&original_ioctl_function))) {
-        LOGE("Failed to hook %s in %s", kIoctlFunctionName.data(), kBinderLibraryName.data());
+        LOGE("Failed to hook %s in %s", kIoctlFunctionName.data(), binder_library);
         g_binder_interceptor.clear();
         g_binder_stub.clear();
         return false;
