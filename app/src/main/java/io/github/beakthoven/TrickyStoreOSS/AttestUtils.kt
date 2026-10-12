@@ -43,22 +43,27 @@ object AttestUtils {
     private const val AAID_PROVIDER = "sec_key_att_app_id_provider"
     private const val AAID_PROVIDER_TIMEOUT_MS = 120_000L
 
-    // keystore2 gets the attestation application id from system_server. Up to Android 13 it gives up
-    // after 5 s and then dereferences the null binder, so an attested keygen this early kills it.
-    private fun waitForAaidProvider() {
-        val deadline = SystemClock.uptimeMillis() + AAID_PROVIDER_TIMEOUT_MS
+    // Android 12/13 and affected early Android 14 branches can dereference an absent AAID provider.
+    private fun waitForAaidProvider(): Boolean {
+        val deadline = SystemClock.elapsedRealtime() + AAID_PROVIDER_TIMEOUT_MS
         while (ServiceManager.checkService(AAID_PROVIDER) == null) {
-            if (SystemClock.uptimeMillis() >= deadline) {
-                Logger.w("$AAID_PROVIDER not registered after ${AAID_PROVIDER_TIMEOUT_MS}ms, checking TEE anyway")
-                return
+            if (SystemClock.elapsedRealtime() >= deadline) {
+                Logger.w("$AAID_PROVIDER unavailable; skipping attestation probe")
+                return false
             }
-            Thread.sleep(500)
+            try {
+                Thread.sleep(500)
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+                return false
+            }
         }
+        return true
     }
 
     private fun isTEEWorking(): Boolean {
         return try {
-            waitForAaidProvider()
+            if (!waitForAaidProvider()) return false
 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                 android.app.ActivityThread.initializeMainlineModules()
