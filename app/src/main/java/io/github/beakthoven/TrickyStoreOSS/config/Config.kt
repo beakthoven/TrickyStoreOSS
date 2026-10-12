@@ -11,19 +11,19 @@ import android.os.FileObserver
 import android.os.IBinder
 import android.os.IInterface
 import android.os.ServiceManager
-import io.github.beakthoven.TrickyStoreOSS.AttestUtils.TEEStatus
+import io.github.beakthoven.TrickyStoreOSS.AttestUtils.ProbeStatus
+import io.github.beakthoven.TrickyStoreOSS.AttestUtils
 import io.github.beakthoven.TrickyStoreOSS.KeyBoxUtils
 import io.github.beakthoven.TrickyStoreOSS.interceptors.SecurityLevelInterceptor
 import io.github.beakthoven.TrickyStoreOSS.logging.Logger
 import java.io.File
-import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 
 object PkgConfig {
     // volatile immutable map; swapped on reload so binder threads read a consistent snapshot
     @Volatile private var packageModes: Map<String, Mode> = emptyMap()
-
-    // UID-package set cache
-    private val uidPackages = ConcurrentHashMap<Int, Array<String>>()
 
     enum class Mode {
         AUTO,
@@ -31,31 +31,67 @@ object PkgConfig {
         GENERATE,
     }
 
+    private val packageNameRegex = Regex("[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)+")
+
     private fun updateTargetPackages(f: File?) {
         val raw = runCatching {
             val modes = mutableMapOf<String, Mode>()
-            f?.readLines()?.forEach {
-                if (it.isNotBlank() && !it.startsWith("#")) {
-                    val n = it.trim()
-                    when {
-                        n.endsWith("!") -> modes[n.removeSuffix("!").trim()] = Mode.GENERATE
-                        n.endsWith("?") -> modes[n.removeSuffix("?").trim()] = Mode.LEAF_HACK
-                        else -> modes[n] = Mode.AUTO
-                    }
+            f?.readLines()?.forEach { line ->
+                val n = line.substringBefore('#').trim()
+                if (n.isEmpty()) return@forEach
+                val mode = when {
+                    n.endsWith("!") -> Mode.GENERATE
+                    n.endsWith("?") -> Mode.LEAF_HACK
+                    else -> Mode.AUTO
                 }
+                val packageName = when (mode) {
+                    Mode.GENERATE, Mode.LEAF_HACK -> n.dropLast(1).trim()
+                    Mode.AUTO -> n
+                }
+                if (packageName.endsWith('!') || packageName.endsWith('?') || !packageNameRegex.matches(packageName)) {
+                    Logger.w("ignoring invalid target package entry: $n")
+                    return@forEach
+                }
+                modes[packageName] = mode
             }
             packageModes = modes
+            SecurityLevelInterceptor.invalidatePatchedResponses()
             Logger.i("update target packages: $modes")
         }
         raw.onFailure { Logger.e("failed to update target files", it) }
     }
 
-    private fun updateKeyBox(f: File?) {
+    private data class KeyboxFileState(val exists: Boolean, val length: Long, val modified: Long)
+
+    private fun keyboxFileState(file: File): KeyboxFileState =
+        KeyboxFileState(file.exists(), file.length(), file.lastModified())
+
+    private fun updateKeyBox(generation: Long? = null) {
         val raw = runCatching {
-            KeyBoxUtils.readFromXml(f?.readText())
-            SecurityLevelInterceptor.cleanupAll()
+            val file = File(root, KEYBOX_FILE)
+            val before = keyboxFileState(file)
+            val contents = if (before.exists) file.readText() else null
+            val current = keyboxFileState(file)
+            val isCurrent = {
+                val unchanged = runCatching {
+                    (generation == null || generation == keyboxReloadGeneration.get()) &&
+                        keyboxFileState(file) == current &&
+                        (!current.exists || file.readText() == contents)
+                }.getOrDefault(false)
+                if (!unchanged && generation != null) keyboxReloadPending.set(true)
+                unchanged
+            }
+            if (!isCurrent()) {
+                if (generation != null) keyboxReloadPending.set(true)
+                return@runCatching
+            }
+            if (KeyBoxUtils.readFromXml(contents, isCurrent)) {
+                SecurityLevelInterceptor.invalidatePatchedResponses()
+            } else {
+                Logger.e("failed to update keybox; previous snapshot retained")
+            }
         }
-        raw.onFailure { Logger.e("failed to update keybox", it) }
+        raw.onFailure { Logger.e("failed to read keybox file") }
     }
 
     private const val CONFIG_PATH = "/data/adb/tricky_store"
@@ -64,35 +100,74 @@ object PkgConfig {
     private const val TEE_STATUS_FILE = "tee_status"
     private const val PATCHLEVEL_FILE = "security_patch.txt"
     private val root = File(CONFIG_PATH)
+    private val keyboxReloadExecutor = Executors.newSingleThreadExecutor { r ->
+        Thread(r, "ts-keybox-reload").apply { isDaemon = true }
+    }
+    private val keyboxReloadPending = AtomicBoolean(false)
+    private val keyboxReloadScheduled = AtomicBoolean(false)
+    private val keyboxReloadGeneration = AtomicLong(0)
 
-    @Volatile private var teeBroken: Boolean? = null
+    private fun scheduleKeyboxReload() {
+        keyboxReloadGeneration.incrementAndGet()
+        keyboxReloadPending.set(true)
+        if (!keyboxReloadScheduled.compareAndSet(false, true)) return
+        keyboxReloadExecutor.execute {
+            try {
+                while (keyboxReloadPending.getAndSet(false)) {
+                    val generation = keyboxReloadGeneration.get()
+                    updateKeyBox(generation)
+                }
+            } finally {
+                keyboxReloadScheduled.set(false)
+                if (keyboxReloadPending.get()) scheduleKeyboxReload()
+            }
+        }
+    }
+
+    @Volatile private var probe: AttestUtils.ProbeResult? = null
 
     private fun storeTEEStatus(root: File) {
+        val result = AttestUtils.probeResult
+        probe = result
+        val teeBroken = when (result.status) {
+            ProbeStatus.AVAILABLE -> false
+            ProbeStatus.FAILED -> true
+            ProbeStatus.UNAVAILABLE -> null
+        }
         val statusFile = File(root, TEE_STATUS_FILE)
-        teeBroken = !TEEStatus
         try {
-            statusFile.writeText("teeBroken=${teeBroken}")
-            Logger.i("TEE status written to $statusFile: teeBroken=$teeBroken")
+            statusFile.writeText(
+                "status=${result.status}\n" +
+                    "category=${result.failureCategory ?: "none"}\n" +
+                    "serviceErrorCode=${result.serviceErrorCode ?: "none"}\n" +
+                    "teeBroken=${teeBroken ?: "unknown"}",
+            )
+            Logger.i(
+                "TEE status written to $statusFile: status=${result.status}, " +
+                    "category=${result.failureCategory ?: "none"}, code=${result.serviceErrorCode ?: "none"}",
+            )
         } catch (e: Exception) {
             Logger.e("Failed to write TEE status: ${e.message}")
         }
     }
 
+    private fun currentProbe(): AttestUtils.ProbeResult {
+        probe?.let { return it }
+        storeTEEStatus(root)
+        return probe ?: AttestUtils.probeResult.also { probe = it }
+    }
+
     object ConfigObserver : FileObserver(root, CLOSE_WRITE or DELETE or MOVED_FROM or MOVED_TO) {
         override fun onEvent(event: Int, path: String?) {
             path ?: return
-            val f =
-                when (event) {
-                    CLOSE_WRITE,
-                    MOVED_TO -> File(root, path)
-                    DELETE,
-                    MOVED_FROM -> null
-                    else -> return
-                }
+            when (event) {
+                CLOSE_WRITE, MOVED_TO, DELETE, MOVED_FROM -> Unit
+                else -> return
+            }
             when (path) {
-                TARGET_FILE -> updateTargetPackages(f)
-                KEYBOX_FILE -> updateKeyBox(f)
-                PATCHLEVEL_FILE -> updatePatchLevel(f)
+                TARGET_FILE -> updateTargetPackages(File(root, path).takeIf { it.exists() })
+                KEYBOX_FILE -> scheduleKeyboxReload()
+                PATCHLEVEL_FILE -> updatePatchLevel(File(root, path).takeIf { it.exists() })
             }
         }
     }
@@ -106,11 +181,8 @@ object PkgConfig {
             Logger.e("target.txt file not found, please put it to $scope !")
         }
         val keybox = File(root, KEYBOX_FILE)
-        if (!keybox.exists()) {
-            Logger.e("keybox file not found, please put it to $keybox !")
-        } else {
-            updateKeyBox(keybox)
-        }
+        if (!keybox.exists()) Logger.e("keybox file not found, please put it to $keybox !")
+        updateKeyBox()
         val patchFile = File(root, PATCHLEVEL_FILE)
         updatePatchLevel(if (patchFile.exists()) patchFile else null)
         ConfigObserver.startWatching()
@@ -122,7 +194,6 @@ object PkgConfig {
             override fun binderDied() {
                 (iPm as? IInterface)?.asBinder()?.unlinkToDeath(this, 0)
                 iPm = null
-                uidPackages.clear()
             }
         }
 
@@ -135,36 +206,42 @@ object PkgConfig {
         return iPm
     }
 
+    private fun packagesForUid(uid: Int): Array<String>? =
+        runCatching { getPm()?.getPackagesForUid(uid) }
+            .onFailure { Logger.e("failed to get packages for uid=$uid", it) }
+            .getOrNull()
+
     fun hasPermissionForUid(uid: Int, permission: String): Boolean {
         val userId = uid / 100000
-        return (uidPackages.getOrPut(uid) { getPm()?.getPackagesForUid(uid) ?: return false }).any { pkg ->
+        return packagesForUid(uid)?.any { pkg ->
             runCatching { getPm()?.checkPermission(permission, pkg, userId) == 0 }.getOrDefault(false)
-        }
+        } ?: false
     }
 
-    private fun checkNeed(callingUid: Int, targetMode: Mode, autoPredicate: Boolean): Boolean {
+    private fun checkNeed(callingUid: Int, targetMode: Mode): Boolean {
         val raw = runCatching {
-            val ps =
-                uidPackages.getOrPut(callingUid) {
-                    // PM gone: don't cache, so the next call retries
-                    getPm()?.getPackagesForUid(callingUid) ?: return false
-                }
-            if (teeBroken == null) storeTEEStatus(root)
-            for (pkg in ps) {
+            val ps = packagesForUid(callingUid) ?: return false
+            val result = currentProbe()
+            val autoMode = when (result.status) {
+                ProbeStatus.AVAILABLE -> Mode.LEAF_HACK
+                ProbeStatus.FAILED -> Mode.GENERATE
+                ProbeStatus.UNAVAILABLE -> null
+            }
+            ps.any { pkg ->
                 when (packageModes[pkg]) {
-                    targetMode -> return true
-                    Mode.AUTO -> if (autoPredicate) return true
-                    else -> {}
+                    targetMode -> true
+                    Mode.AUTO -> autoMode == targetMode
+                    null -> false
+                    else -> false
                 }
             }
-            return false
         }
         return raw.onFailure { Logger.e("failed to get packages", it) }.getOrNull() ?: false
     }
 
-    fun needHack(callingUid: Int): Boolean = checkNeed(callingUid, Mode.LEAF_HACK, teeBroken == false)
+    fun needHack(callingUid: Int): Boolean = checkNeed(callingUid, Mode.LEAF_HACK)
 
-    fun needGenerate(callingUid: Int): Boolean = checkNeed(callingUid, Mode.GENERATE, teeBroken == true)
+    fun needGenerate(callingUid: Int): Boolean = checkNeed(callingUid, Mode.GENERATE)
 
     @Volatile private var globalPatchLevel: CustomPatchLevel? = null
 
@@ -174,7 +251,7 @@ object PkgConfig {
         get() = globalPatchLevel
 
     fun packagePatchLevelForUid(uid: Int): CustomPatchLevel? {
-        val packages = uidPackages.getOrPut(uid) { getPm()?.getPackagesForUid(uid) ?: return null }
+        val packages = packagesForUid(uid) ?: return null
         return packages.firstNotNullOfOrNull { packagePatchLevels[it] }
     }
 
@@ -185,13 +262,14 @@ object PkgConfig {
             if (f == null || !f.exists()) {
                 globalPatchLevel = null
                 packagePatchLevels = emptyMap()
+                SecurityLevelInterceptor.invalidatePatchedResponses()
                 return@runCatching
             }
             val contexts = LinkedHashMap<String, MutableList<String>>()
             var current = ""
             f.readLines().forEach { line ->
-                val trimmed = line.trim()
-                if (trimmed.isEmpty() || trimmed.startsWith("#")) return@forEach
+                val trimmed = line.substringBefore('#').trim()
+                if (trimmed.isEmpty()) return@forEach
                 patchSectionRegex.find(trimmed)?.let { current = it.groupValues[1] }
                     ?: contexts.getOrPut(current) { mutableListOf() }.add(trimmed)
             }
@@ -199,6 +277,7 @@ object PkgConfig {
             for ((ctx, lines) in contexts) parsePatchContext(lines)?.let { parsed[ctx] = it }
             globalPatchLevel = parsed[""]
             packagePatchLevels = parsed.filterKeys { it.isNotEmpty() }
+            SecurityLevelInterceptor.invalidatePatchedResponses()
             Logger.i(
                 "loaded patch levels: global=${globalPatchLevel != null}, ${packagePatchLevels.size} package overrides"
             )
