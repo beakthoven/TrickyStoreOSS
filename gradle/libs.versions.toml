@@ -2,7 +2,7 @@
 agp = "9.4.1"
 annotation = "1.11.0"
 jdk18on = "1.86"
-libcxx = "29.0.14206865"
+libcxx = "30.0.16248370"
 
 [libraries]
 annotation = { module = "androidx.annotation:annotation", version.ref = "annotation" }
