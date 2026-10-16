@@ -5,6 +5,7 @@
 
 package android.content.pm;
 
+import android.content.Intent;
 import android.os.IBinder;
 
 public interface IPackageManager {
@@ -19,6 +20,10 @@ public interface IPackageManager {
     ParceledListSlice<PackageInfo> getInstalledPackages(int flags, int userId);
 
     ParceledListSlice<PackageInfo> getInstalledPackages(long flags, int userId);
+
+    ParceledListSlice<ResolveInfo> queryIntentServices(Intent intent, String resolvedType, int flags, int userId);
+
+    ParceledListSlice<ResolveInfo> queryIntentServices(Intent intent, String resolvedType, long flags, int userId);
 
     class Stub {
         public static IPackageManager asInterface(IBinder binder) {
