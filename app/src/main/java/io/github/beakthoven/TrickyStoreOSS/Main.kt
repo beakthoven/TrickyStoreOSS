@@ -21,6 +21,8 @@ fun main(args: Array<String>) {
     Security.addProvider(BouncyCastleProvider())
 
     try {
+        // Wait for remote provisioning before the startup probe caches its result.
+        RemoteProvisioning.waitForUserUnlockIfNeeded()
         val probe = AttestUtils.probe()
         Logger.i("Startup attestation probe: ${probe.status} (${probe.failureCategory ?: "none"})")
         AndroidUtils.setupBootHash()
