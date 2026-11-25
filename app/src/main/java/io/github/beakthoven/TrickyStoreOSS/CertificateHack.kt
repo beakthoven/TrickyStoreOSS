@@ -198,7 +198,8 @@ object CertificateHack {
                 DEROctetString(verifiedBootKey),
                 ASN1Boolean.TRUE,
                 ASN1Enumerated(0),
-                DEROctetString(verifiedBootHash),
+                // No digest from the device means an empty verifiedBootHash, which is what the TEE would attest.
+                DEROctetString(verifiedBootHash ?: ByteArray(0)),
             )
         val hackedRootOfTrust = DERSequence(rootOfTrustElements)
 

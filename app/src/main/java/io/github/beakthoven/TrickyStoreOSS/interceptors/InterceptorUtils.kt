@@ -14,6 +14,7 @@ import android.security.Credentials
 import android.security.KeyStore
 import android.security.keystore.KeystoreResponse
 import io.github.beakthoven.TrickyStoreOSS.logging.Logger
+import java.util.concurrent.TimeUnit
 import kotlin.system.exitProcess
 
 abstract class BaseKeystoreInterceptor : BinderInterceptor() {
@@ -26,6 +27,11 @@ abstract class BaseKeystoreInterceptor : BinderInterceptor() {
     protected abstract val serviceName: String
     protected abstract val injectionCommand: String
     protected abstract val processName: String
+
+    private companion object {
+        // Comfortably above the injector's own 20s budget, so the injector gets to fail and clean up first.
+        const val INJECTION_TIMEOUT_SECONDS = 30L
+    }
 
     fun tryRunKeystoreInterceptor(): Boolean {
         Logger.i("Trying to register ${this::class.simpleName} (attempt $triedCount)...")
@@ -75,12 +81,21 @@ abstract class BaseKeystoreInterceptor : BinderInterceptor() {
     protected open fun performInjection() {
         Logger.i("Attempting to inject into $processName...")
 
-        val command = arrayOf("/system/bin/sh", "-c", injectionCommand)
+        val command = listOf("/system/bin/sh", "-c", injectionCommand)
         Logger.d("Injection command: ${command.joinToString(" ")}")
 
-        val process = Runtime.getRuntime().exec(command)
+        // The injector leaves the target attached for as long as it runs, and a remote call that never
+        // returns would keep both it and this daemon waiting forever. Bound the wait and let the
+        // supervisor restart the daemon, which retries against a tracer-free target.
+        val process = ProcessBuilder(command).inheritIO().start()
 
-        if (process.waitFor() != 0) {
+        if (!process.waitFor(INJECTION_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+            process.destroyForcibly()
+            Logger.e("Injection timed out after ${INJECTION_TIMEOUT_SECONDS}s! Daemon will exit")
+            exitProcess(1)
+        }
+
+        if (process.exitValue() != 0) {
             Logger.e("Injection failed! Daemon will exit")
             exitProcess(1)
         }

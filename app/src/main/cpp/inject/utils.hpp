@@ -5,6 +5,7 @@
 #include <sys/ptrace.h>
 #include <unistd.h>
 
+#include <chrono>
 #include <map>
 #include <optional>
 #include <string>
@@ -60,9 +61,19 @@ uintptr_t push_string(int pid, struct user_regs_struct &regs, const char *str);
 
 std::optional<uintptr_t> remote_call(int pid, struct user_regs_struct &regs, uintptr_t func_addr, uintptr_t return_addr,
                                      std::vector<uintptr_t> &args, int *pending_signal = nullptr);
-bool remote_pre_call(int pid, struct user_regs_struct &regs, uintptr_t func_addr, uintptr_t return_addr, std::vector<uintptr_t> &args);
-std::optional<uintptr_t> remote_post_call(int pid, struct user_regs_struct &regs, uintptr_t expected_return_addr,
-                                          int *pending_signal = nullptr);
+
+using Deadline = std::chrono::steady_clock::time_point;
+
+// Bounds every wait_for_trace() of the injection: a remote call that never returns (or a target that never
+// reaches its stop) must fail the injection instead of parking the tracer and the tracee for good.
+class TraceDeadlineGuard {
+public:
+    explicit TraceDeadlineGuard(std::chrono::seconds budget);
+    ~TraceDeadlineGuard();
+
+    TraceDeadlineGuard(const TraceDeadlineGuard &) = delete;
+    TraceDeadlineGuard &operator=(const TraceDeadlineGuard &) = delete;
+};
 
 bool wait_for_trace(int pid, int *status, int flags);
 std::string parse_status(int status);

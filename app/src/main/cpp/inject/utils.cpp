@@ -20,6 +20,7 @@
 #include <unistd.h>
 
 #include <array>
+#include <chrono>
 #include <cinttypes>
 #include <csignal>
 #include <cstdio>
@@ -42,6 +43,31 @@ constexpr uintptr_t kStackAlignment = 0xf;
 constexpr int kMaxArguments = 8;
 
 constexpr std::string_view kRandomChars = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+
+using SteadyClock = std::chrono::steady_clock;
+
+// SIGALRM is what turns a blocked waitpid(2) into an EINTR once the deadline has passed. The handler body
+// is empty on purpose: wait_for_trace() re-reads the clock and decides whether the wait really timed out.
+void onAlarm(int) {}
+
+struct AlarmHandlerInstaller {
+    AlarmHandlerInstaller() {
+        sigset_t alarmMask;
+        sigemptyset(&alarmMask);
+        sigaddset(&alarmMask, SIGALRM);
+        sigprocmask(SIG_UNBLOCK, &alarmMask, nullptr);
+        struct sigaction action {};
+        action.sa_handler = onAlarm;
+        sigemptyset(&action.sa_mask);
+        action.sa_flags = 0; // no SA_RESTART: waitpid(2) has to return EINTR
+        if (sigaction(SIGALRM, &action, nullptr) == -1) {
+            PLOGE("Failed to install the SIGALRM handler; injection waits will not time out");
+        }
+    }
+};
+
+bool gDeadlineArmed = false;
+Deadline gDeadline = SteadyClock::time_point::max();
 } // namespace
 
 ssize_t write_proc(int pid, uintptr_t remote_addr, const void *buf, size_t len, bool use_proc_mem) {
@@ -296,6 +322,7 @@ void setup_arm_args(struct user_regs_struct &regs, const std::vector<uintptr_t> 
 #endif
 } // namespace
 
+namespace {
 bool remote_pre_call(int pid, struct user_regs_struct &regs, uintptr_t func_addr, uintptr_t return_addr,
                      std::vector<uintptr_t> &args) {
     align_stack(regs);
@@ -470,6 +497,8 @@ std::optional<uintptr_t> remote_post_call(int pid, struct user_regs_struct &regs
     }
 }
 
+} // namespace
+
 std::optional<uintptr_t> remote_call(int pid, struct user_regs_struct &regs, uintptr_t func_addr, uintptr_t return_addr,
                                      std::vector<uintptr_t> &args, int *pending_signal) {
     if (!remote_pre_call(pid, regs, func_addr, return_addr, args)) {
@@ -479,6 +508,18 @@ std::optional<uintptr_t> remote_call(int pid, struct user_regs_struct &regs, uin
     return remote_post_call(pid, regs, return_addr, pending_signal);
 }
 
+TraceDeadlineGuard::TraceDeadlineGuard(std::chrono::seconds budget) {
+    static AlarmHandlerInstaller installer;
+    gDeadline = SteadyClock::now() + budget;
+    gDeadlineArmed = true;
+}
+
+TraceDeadlineGuard::~TraceDeadlineGuard() {
+    alarm(0);
+    gDeadlineArmed = false;
+    gDeadline = SteadyClock::time_point::max();
+}
+
 bool wait_for_trace(int pid, int *status, int flags) {
     if (!status) {
         LOGE("Null status pointer passed to wait_for_trace");
@@ -486,12 +527,26 @@ bool wait_for_trace(int pid, int *status, int flags) {
     }
 
     while (true) {
+        if (gDeadlineArmed) {
+            auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(gDeadline - SteadyClock::now()).count();
+            if (remaining <= 0) {
+                LOGE("Timed out waiting for process %d", pid);
+                return false;
+            }
+            alarm(static_cast<unsigned int>((remaining + 999) / 1000));
+        }
+
         pid_t result = waitpid(pid, status, flags);
+        int saved_errno = errno;
+        alarm(0);
+
         if (result == -1) {
-            if (errno == EINTR) {
+            if (saved_errno == EINTR) {
+                // the alarm interrupts waitpid(2) without SA_RESTART; a stray signal just means "wait again"
                 LOGV("waitpid interrupted, retrying");
                 continue;
             } else {
+                errno = saved_errno;
                 PLOGE("waitpid failed for PID %d", pid);
                 return false;
             }

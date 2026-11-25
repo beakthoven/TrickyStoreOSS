@@ -16,6 +16,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include <chrono>
 #include <cinttypes>
 #include <climits>
 #include <csignal>
@@ -40,6 +41,8 @@ constexpr size_t kMaxPathLength = 4096;
 constexpr const char *kSystemFileContext = "u:object_r:system_file:s0";
 constexpr const char *kLibcModule = "libc.so";
 constexpr const char *kLibdlModule = "libdl.so";
+// A healthy injection takes well under a second; the budget only has to cover a cold cache during early boot.
+constexpr std::chrono::seconds kInjectionBudget{20};
 } // namespace constants
 
 class SavedRegistersGuard {
@@ -48,9 +51,11 @@ public:
         : pid_(pid), regs_(regs), detach_allowed_(detach_allowed) {}
 
     ~SavedRegistersGuard() {
+        // The registers can only be put back while the target is stopped. If it is still busy with a remote call
+        // that outlived the deadline, the call is left to run and the target is released when the injector exits.
         if (active_ && !restore()) {
             detach_allowed_ = false;
-            LOGE("Failed to restore original registers; leaving target stopped");
+            LOGE("Failed to restore the original registers; the target keeps running its current call");
         }
     }
 
@@ -222,12 +227,6 @@ static std::optional<int> transfer_fd_to_remote(int pid, const char *lib_path, s
     if (!remote_hdr)
         return std::nullopt;
 
-    args = {static_cast<uintptr_t>(remote_fd), remote_hdr, MSG_WAITALL};
-    if (!remote_pre_call(pid, regs, reinterpret_cast<uintptr_t>(funcs.recvmsg_addr), 0, args)) {
-        LOGE("Failed to start remote recvmsg call");
-        return std::nullopt;
-    }
-
     msg_hdr.msg_control = &cmsgbuf;
     msg_hdr.msg_name = &sock_addr;
     msg_hdr.msg_namelen = addr_len;
@@ -242,12 +241,17 @@ static std::optional<int> transfer_fd_to_remote(int pid, const char *lib_path, s
     cmsg->cmsg_type = SCM_RIGHTS;
     *reinterpret_cast<int *>(CMSG_DATA(cmsg)) = local_lib_fd;
 
+    // The remote socket is bound already, so the datagram is queued in the kernel now and the remote recvmsg()
+    // below returns as soon as it is called. Starting recvmsg() first and only then sending used to park the
+    // target's thread in a blocking call whenever the send failed (e.g. an SELinux denial), long after the
+    // injector had given up on it.
     if (sendmsg(local_socket, &msg_hdr, 0) == -1) {
         PLOGE("Failed to send fd to remote process");
         return std::nullopt;
     }
 
-    auto recvmsg_result = remote_post_call(pid, regs, 0, pending_signal);
+    args = {static_cast<uintptr_t>(remote_fd), remote_hdr, MSG_WAITALL};
+    auto recvmsg_result = remote_call(pid, regs, reinterpret_cast<uintptr_t>(funcs.recvmsg_addr), 0, args, pending_signal);
     if (!recvmsg_result) {
         LOGE("Remote recvmsg call failed");
         return std::nullopt;
@@ -401,10 +405,12 @@ public:
     ~PtraceAttachment() {
         if (!attached_)
             return;
+        // A tracee is detached by the kernel when its tracer exits, so an unsuccessful detach here only
+        // defers the release to the end of main() instead of stranding the target.
         if (detach_failed_) {
-            LOGE("Leaving process %d stopped after detach failure", pid_);
+            LOGE("Could not detach from process %d; it is released when the injector exits", pid_);
         } else if (!detach()) {
-            LOGE("Leaving process %d stopped because automatic detach failed", pid_);
+            LOGE("Could not detach from process %d automatically; it is released when the injector exits", pid_);
         }
     }
 
@@ -443,6 +449,8 @@ private:
 
 bool inject_library(int pid, const char *lib_path, const char *entry_name) {
     LOGI("Starting injection of %s (entry: %s) into process %d", lib_path, entry_name, pid);
+
+    const TraceDeadlineGuard deadline_guard(constants::kInjectionBudget);
 
     int pending_signal = 0;
     bool detach_allowed = true;

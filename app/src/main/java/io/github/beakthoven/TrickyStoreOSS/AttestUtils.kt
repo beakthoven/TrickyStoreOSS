@@ -57,6 +57,8 @@ object AttestUtils {
 
     @Volatile private var cachedProbeResult: ProbeResult? = null
 
+    @Volatile private var recheckAtElapsedRealtime: Long = 0
+
     val probeResult: ProbeResult
         get() = cachedProbeResult ?: probe()
 
@@ -67,23 +69,28 @@ object AttestUtils {
         get() = probeResult.attestationData
 
     private const val AAID_PROVIDER = "sec_key_att_app_id_provider"
-    private const val AAID_PROVIDER_TIMEOUT_MS = 120_000L
     private const val AAID_POLL_INTERVAL_MS = 500L
-    private const val PROBE_MAX_ATTEMPTS = 3
-    private const val PROBE_RETRY_DELAY_MS = 1_000L
+    // Remote provisioning, the AAID provider and keystore2 itself all come up after this daemon is started,
+    // and an "unavailable" from any of them says nothing about the TEE yet.
+    private const val PROBE_BUDGET_MS = 120_000L
+    private const val PROBE_RETRY_DELAY_MS = 2_000L
+    // A non-conclusive verdict is re-checked from the daemon's idle thread every so often, with a short
+    // budget so a binder thread never waits behind it.
+    const val PROBE_RECHECK_INTERVAL_MS = 60_000L
+    private const val PROBE_RECHECK_BUDGET_MS = 5_000L
     private const val KEYSTORE_SERVICE = "android.system.keystore2.IKeystoreService/default"
     private const val PROBE_ALIAS_PREFIX = "TrickyStoreOSS_probe_"
 
     @Synchronized
     fun probe(): ProbeResult {
         cachedProbeResult?.let { return it }
-        var result = ProbeResult(ProbeStatus.UNAVAILABLE, failureCategory = "not_run")
-        var attempt = 0
-        while (attempt < PROBE_MAX_ATTEMPTS) {
-            result = probeOnce()
-            attempt++
-            if (result.status != ProbeStatus.UNAVAILABLE || attempt == PROBE_MAX_ATTEMPTS) break
-            Logger.w("Attestation probe unavailable; retrying ($attempt/$PROBE_MAX_ATTEMPTS)")
+        val deadline = SystemClock.elapsedRealtime() + PROBE_BUDGET_MS
+        var result = probeOnce(deadline)
+        // UNAVAILABLE describes this moment of boot, not the TEE. Caching it would pin the daemon to the
+        // fallbacks for its whole lifetime (software mode, no attestation data), so keep asking until the
+        // verdict is conclusive or the budget is spent.
+        while (result.status == ProbeStatus.UNAVAILABLE && SystemClock.elapsedRealtime() < deadline) {
+            Logger.w("Attestation probe unavailable (${result.failureCategory}); retrying")
             try {
                 Thread.sleep(PROBE_RETRY_DELAY_MS)
             } catch (e: InterruptedException) {
@@ -91,8 +98,10 @@ object AttestUtils {
                 result = ProbeResult(ProbeStatus.UNAVAILABLE, failureCategory = "interrupted")
                 break
             }
+            result = probeOnce(deadline)
         }
         cachedProbeResult = result
+        recheckAtElapsedRealtime = SystemClock.elapsedRealtime() + PROBE_RECHECK_INTERVAL_MS
         Logger.i(
             "Attestation probe status=${result.status} category=${result.failureCategory ?: "none"}" +
                 " code=${result.serviceErrorCode ?: "none"}",
@@ -100,8 +109,30 @@ object AttestUtils {
         return result
     }
 
-    private fun probeOnce(): ProbeResult = try {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) probeKeystore2() else probeLegacyKeystore()
+    /**
+     * Re-runs the probe when the cached verdict is not conclusive and the recheck interval has passed.
+     * Returns the new verdict if it changed, null otherwise. Meant for the daemon's idle thread: a
+     * verdict that was only true at boot must not pin AUTO targets to the wrong mode for the whole boot.
+     */
+    @Synchronized
+    fun recheck(): ProbeResult? {
+        val cached = cachedProbeResult ?: return null
+        if (cached.status == ProbeStatus.AVAILABLE || SystemClock.elapsedRealtime() < recheckAtElapsedRealtime) {
+            return null
+        }
+        recheckAtElapsedRealtime = SystemClock.elapsedRealtime() + PROBE_RECHECK_INTERVAL_MS
+        val result = probeOnce(SystemClock.elapsedRealtime() + PROBE_RECHECK_BUDGET_MS)
+        if (result.status == cached.status && result.failureCategory == cached.failureCategory) return null
+        cachedProbeResult = result
+        Logger.i(
+            "Attestation probe changed to status=${result.status} category=${result.failureCategory ?: "none"}" +
+                " code=${result.serviceErrorCode ?: "none"}",
+        )
+        return result
+    }
+
+    private fun probeOnce(deadline: Long): ProbeResult = try {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) probeKeystore2(deadline) else probeLegacyKeystore()
     } catch (e: InterruptedException) {
         Thread.currentThread().interrupt()
         ProbeResult(ProbeStatus.UNAVAILABLE, failureCategory = "interrupted")
@@ -133,11 +164,10 @@ object AttestUtils {
         return ProbeResult(status, failureCategory = category, serviceErrorCode = error.errorCode)
     }
 
-    private fun probeKeystore2(): ProbeResult = Keystore2Probe.run()
+    private fun probeKeystore2(deadline: Long): ProbeResult = Keystore2Probe.run(deadline)
 
     private object Keystore2Probe {
-        private fun waitForAaidProvider(): Boolean {
-            val deadline = SystemClock.elapsedRealtime() + AAID_PROVIDER_TIMEOUT_MS
+        private fun waitForAaidProvider(deadline: Long): Boolean {
             while (ServiceManager.checkService(AAID_PROVIDER) == null) {
                 val remaining = deadline - SystemClock.elapsedRealtime()
                 if (remaining <= 0) return false
@@ -146,8 +176,8 @@ object AttestUtils {
             return true
         }
 
-        fun run(): ProbeResult {
-            if (!waitForAaidProvider()) {
+        fun run(deadline: Long): ProbeResult {
+            if (!waitForAaidProvider(deadline)) {
                 Logger.w("Attestation probe unavailable: AAID provider readiness timeout")
                 return ProbeResult(ProbeStatus.UNAVAILABLE, failureCategory = "aaid_timeout")
             }

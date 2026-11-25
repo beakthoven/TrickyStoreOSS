@@ -9,6 +9,7 @@ import android.os.Build
 import io.github.beakthoven.TrickyStoreOSS.config.PkgConfig
 import io.github.beakthoven.TrickyStoreOSS.interceptors.Keystore2Interceptor
 import io.github.beakthoven.TrickyStoreOSS.interceptors.KeystoreInterceptor
+import io.github.beakthoven.TrickyStoreOSS.interceptors.SecurityLevelInterceptor
 import io.github.beakthoven.TrickyStoreOSS.logging.Logger
 import java.security.Security
 import org.bouncycastle.jce.provider.BouncyCastleProvider
@@ -26,6 +27,8 @@ fun main(args: Array<String>) {
         AndroidUtils.setupBootHash()
         initializeInterceptors()
         maintainService()
+    } catch (e: InterruptedException) {
+        Thread.currentThread().interrupt()
     } catch (e: Exception) {
         Logger.e("Fatal error in main", e)
         throw e
@@ -58,5 +61,12 @@ private fun selectKeystoreInterceptor() =
 
 private fun maintainService() {
     Logger.i("Service started, entering maintenance mode")
-    Thread.currentThread().join()
+    while (true) {
+        Thread.sleep(AttestUtils.PROBE_RECHECK_INTERVAL_MS)
+        val probe = AttestUtils.recheck() ?: continue
+        // The mode of every AUTO target and the values lifted from the probe may have changed with it.
+        AndroidUtils.resetAttestationDerivedState()
+        AndroidUtils.setupBootHash()
+        if (probe.status == AttestUtils.ProbeStatus.AVAILABLE) SecurityLevelInterceptor.invalidatePatchedResponses()
+    }
 }
