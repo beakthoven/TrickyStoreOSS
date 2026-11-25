@@ -410,7 +410,9 @@ object CertificateGen {
         val attestationVersion = versions.attestation
         val keymasterVersion = versions.keymaster
         val key = AndroidUtils.bootKey
-        val hash = AndroidUtils.getBootHashFromProp()
+        // A device that has no verified boot digest attests an empty verifiedBootHash. That is still what a
+        // checker expects to see there, unlike an invented value.
+        val hash = AndroidUtils.getBootHashFromProp() ?: ByteArray(0)
         val rootOfTrust =
             DERSequence(arrayOf(DEROctetString(key), ASN1Boolean.TRUE, ASN1Enumerated(0), DEROctetString(hash)))
         val osVersion = ASN1Integer(AndroidUtils.osVersion.toLong())

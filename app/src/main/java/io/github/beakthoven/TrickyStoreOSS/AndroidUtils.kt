@@ -28,7 +28,18 @@ object AndroidUtils {
 
     const val DO_NOT_REPORT = -1
 
-    val bootKey: ByteArray by lazy {
+    // Derived from the TEE probe, hence cached instead of lazy: a late probe verdict has to be able to
+    // replace fallback values that were computed before the TEE answered.
+    @Volatile private var cachedBootKey: ByteArray? = null
+
+    @Volatile private var cachedModuleHash: ByteArray? = null
+
+    @Volatile private var bootHash: ByteArray? = null
+
+    val bootKey: ByteArray
+        get() = cachedBootKey ?: resolveBootKey().also { cachedBootKey = it }
+
+    private fun resolveBootKey(): ByteArray =
         getBootKeyFromProp()?.also { Logger.d("Using boot key from ro.boot.vbmeta.public_key_digest") }
             ?: CachedAttestData?.verifiedBootKey?.takeIfNonZero()?.also {
                 Logger.d("Using boot key from cached TEE attestation")
@@ -36,7 +47,6 @@ object AndroidUtils {
             ?: persistedBootKey().also {
                 Logger.d("Using persisted random boot key (no AVB key available)")
             }
-    }
 
     private fun ByteArray.takeIfNonZero(): ByteArray? = takeIf { isNotEmpty() && any { it != 0.toByte() } }
 
@@ -51,44 +61,65 @@ object AndroidUtils {
     private fun persistedBootKey(): ByteArray {
         val file = File("/data/adb/tricky_store/boot_key")
         return runCatching {
-                if (file.exists()) {
-                    file.readText().trim().hexToByteArray()
-                } else {
-                    file.parentFile?.mkdirs()
-                    val key = randomBytes()
-                    file.writeText(key.toHex())
-                    key
-                }
+            if (file.exists() && file.length() == 64L) {
+                file.readText().trim().hexToByteArray()
+            } else {
+                file.parentFile?.mkdirs()
+                val key = randomBytes()
+                // Write-then-rename, so an interrupted write can never leave a truncated key behind.
+                val temporary = File(file.parentFile, "${file.name}.tmp")
+                temporary.writeText(key.toHex())
+                check(temporary.renameTo(file)) { "Failed to persist boot key" }
+                key
             }
+        }
             .getOrElse {
                 Logger.e("Failed to persist boot key, using ephemeral random", it)
                 randomBytes()
             }
     }
 
-    fun setupBootHash() {
-        getBootHashFromProp()?.also { Logger.d("Using boot hash from system property") }
-            ?: getBootHashFromAttestation()?.also {
-                Logger.d("Using boot hash from attestation")
-                setBootHashProp(it)
-            }
-            ?: randomBytes().also {
-                Logger.d("Generating random boot hash")
-                setBootHashProp(it)
-            }
+    /** Drops everything computed from a previous TEE probe; call whenever the probe verdict changes. */
+    fun resetAttestationDerivedState() {
+        cachedBootKey = null
+        cachedModuleHash = null
+        resolvedVersions.clear()
     }
 
-    @OptIn(ExperimentalStdlibApi::class)
-    fun getBootHashFromProp(): ByteArray? {
-        val digest = SystemProperties.get("ro.boot.vbmeta.digest", null) ?: return null
-        Logger.d("Read ro.boot.vbmeta.digest")
+    fun setupBootHash() {
+        readBootHashFromProp()?.also {
+            Logger.d("Using boot hash from system property")
+            bootHash = it
+            return
+        }
+        // The attestation and the bootconfig both carry the bootloader's own digest of this boot. A random
+        // placeholder never could: it contradicts both, and every checker compares them.
+        val hash =
+            getBootHashFromAttestation()?.also { Logger.d("Using boot hash from attestation") }
+                ?: getBootHashFromBootConfig()?.also { Logger.d("Using boot hash from bootconfig") }
+        bootHash = hash
+        if (hash == null) {
+            Logger.w("No verified boot hash available; leaving ro.boot.vbmeta.digest untouched")
+        } else {
+            setBootHashProp(hash)
+        }
+    }
 
-        if (digest.isBlank()) {
-            Logger.d("Property is blank")
+    /**
+     * The verified boot hash in effect, or null when the device offers none. `ro.*` properties are
+     * write-once, so a property that is missing or malformed when the daemon starts can never be
+     * replaced; the value chosen by setupBootHash() is then served from memory.
+     */
+    fun getBootHashFromProp(): ByteArray? = readBootHashFromProp() ?: bootHash
+
+    @OptIn(ExperimentalStdlibApi::class)
+    private fun readBootHashFromProp(): ByteArray? {
+        val digest = SystemProperties.get("ro.boot.vbmeta.digest", null) ?: return null
+        if (digest.isBlank() || digest.length != 64) {
+            Logger.d("ro.boot.vbmeta.digest is absent, blank or malformed")
             return null
         }
-
-        return if (digest.length == 64) runCatching { digest.hexToByteArray() }.getOrNull() else null
+        return runCatching { digest.hexToByteArray() }.getOrNull()
     }
 
     private fun getBootHashFromAttestation(): ByteArray? {
@@ -98,6 +129,18 @@ object AndroidUtils {
             Logger.e("Failed to get boot hash from attestation: ${e.message}")
             null
         }
+    }
+
+    @OptIn(ExperimentalStdlibApi::class)
+    private fun getBootHashFromBootConfig(): ByteArray? {
+        val pattern = Regex("""androidboot\.vbmeta\.digest\s*=\s*"?([0-9a-fA-F]{64})"?""")
+        for (path in listOf("/proc/bootconfig", "/proc/cmdline")) {
+            val digest = runCatching { pattern.find(File(path).readText())?.groupValues?.get(1) }
+                .onFailure { Logger.d("Failed to read $path for the boot hash: ${it.message}") }
+                .getOrNull() ?: continue
+            return runCatching { digest.hexToByteArray() }.getOrNull()
+        }
+        return null
     }
 
     private fun setBootHashProp(bytes: ByteArray) {
@@ -327,11 +370,13 @@ object AndroidUtils {
             }
             .getOrNull()
 
-    val moduleHash: ByteArray by lazy {
+    val moduleHash: ByteArray
+        get() = cachedModuleHash ?: resolveModuleHash().also { cachedModuleHash = it }
+
+    private fun resolveModuleHash(): ByteArray =
         getSupplementaryAttestationInfo(KeyStoreManager.MODULE_HASH)?.let {
             MessageDigest.getInstance("SHA-256").digest(it)
         } ?: CachedAttestData?.moduleHash ?: ByteArray(32).also { Logger.e("Failed to source module hash") }
-    }
 }
 
 fun String.trimLine(): String = trim().split("\n").joinToString("\n") { it.trim() }

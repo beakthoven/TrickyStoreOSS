@@ -135,13 +135,16 @@ object PkgConfig {
             ProbeStatus.UNAVAILABLE -> null
         }
         val statusFile = File(root, TEE_STATUS_FILE)
+        // Written under a temporary name and renamed, so a reader never sees a half-written file.
+        val temporary = File(root, "$TEE_STATUS_FILE.tmp")
         try {
-            statusFile.writeText(
+            temporary.writeText(
                 "status=${result.status}\n" +
                     "category=${result.failureCategory ?: "none"}\n" +
                     "serviceErrorCode=${result.serviceErrorCode ?: "none"}\n" +
                     "teeBroken=${teeBroken ?: "unknown"}",
             )
+            check(temporary.renameTo(statusFile)) { "Failed to publish $statusFile" }
             Logger.i(
                 "TEE status written to $statusFile: status=${result.status}, " +
                     "category=${result.failureCategory ?: "none"}, code=${result.serviceErrorCode ?: "none"}",
@@ -152,9 +155,10 @@ object PkgConfig {
     }
 
     private fun currentProbe(): AttestUtils.ProbeResult {
-        probe?.let { return it }
-        storeTEEStatus(root)
-        return probe ?: AttestUtils.probeResult.also { probe = it }
+        // probeResult stays the same object until the verdict changes, so identity tells the two apart.
+        val result = AttestUtils.probeResult
+        if (probe !== result) storeTEEStatus(root)
+        return probe ?: result
     }
 
     object ConfigObserver : FileObserver(root, CLOSE_WRITE or DELETE or MOVED_FROM or MOVED_TO) {
